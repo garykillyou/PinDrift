@@ -102,18 +102,22 @@ PinDrift/
 ### 執行流程（連接 iPhone 的關鍵鏈路，長連線架構）
 1. `tunneld` 必須以系統管理員權限先啟動（App 開起來時 `_ensure_tunneld()` 會自動處理，
    或手動跑 `python -m pymobiledevice3 remote tunneld`），建立 iOS 26 的 RemoteXPC 通道。
-2. 按「開始模擬」時，[session.py](gps_qt/session.py) 的 `GPSSession._session_main()` 用 `asyncio.ensure_future()` 建立一個常駐 task，`async with DvtProvider(rsd) as dvt, LocationSimulation(dvt) as sim:` 開一次連線後就常駐在 while 迴圈裡；後續按「停止」「往起點／往終點」都**不會**重建 task 或重新連線，只是改變 `self.pending_action` 這個共享狀態（`"forward" | "reverse" | "pause" | "disconnect"`），由 while 迴圈讀取並分派動作。
-3. 直到 `pending_action == "disconnect"`（使用者按「恢復真實定位」）才 `break` 出迴圈、呼叫 `sim.clear()` 並讓 `async with` 關閉連線——恢復真實 GPS 只會在明確斷線時發生，單純停止／切換方向都仍保持模擬連線在目前座標。
+2. 按「開始移動」時，[session.py](gps_qt/session.py) 的 `GPSSession._session_main()` 用 `asyncio.ensure_future()` 建立一個常駐 task，`async with DvtProvider(rsd) as dvt, LocationSimulation(dvt) as sim:` 開一次連線後就常駐在 while 迴圈裡；後續按「停止」都**不會**重建 task 或重新連線，只是改變 `self.pending_action` 這個共享狀態（`"forward" | "reverse" | "pause" | "disconnect"`），由 while 迴圈讀取並分派動作。「往起點／往終點」（切換方向）本身**不會**碰觸 `pending_action`，只改變下面提到的 `self.direction`。
+3. 直到 `pending_action == "disconnect"`（使用者按「恢復真實定位」）才 `break` 出迴圈、呼叫 `sim.clear()` 並讓 `async with` 關閉連線——恢復真實 GPS 只會在明確斷線時發生，單純停止都仍保持模擬連線在目前座標。
 4. 座標注入本身是 `sim.set(lat, lon)`，呼叫位置在 `_walk_route()` / `_walk_pin()` 這兩個由 `_session_main()` 依 `pending_action` 呼叫的協程裡。
 
 ### 兩種模式（由 `MainWindow.mode` 控制，動作由 `pending_action` 驅動）
 - **路線模式（route）**：`_walk_route(sim, direction)` 中 `direction=1` 往終點走、`direction=-1` 往起點走回去。
-  `GPSSession.reverse()`（由「往起點／往終點」按鈕觸發）是**方向切換**而非一次性動作：目前不是
-  `"reverse"` 就切成 `"reverse"`，已經是就切回 `"forward"`，所以走回去的途中可以再按一次改回前進。
-  `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成 m/s）把路線切成每秒一個內插點；目前走到第幾個內插點記錄在 `point_idx`，中斷（停止／切換方向／斷線）時會停在原點，之後從該點繼續。
+  方向與移動是兩個分開的動作：`GPSSession.toggle_direction()`（由「往起點／往終點」按鈕觸發）**單純
+  切換** `self.direction`（`"forward"` / `"reverse"`），不會碰 `pending_action`、也不會啟動 task，
+  純粹只是記錄「下次按開始移動要往哪走」；`GPSSession.start()`（由「開始移動」按鈕觸發）才會把
+  `pending_action` 設成目前的 `self.direction` 並真正開始移動。UI 在移動中（`pending_action` 為
+  `forward`/`reverse`）或斷線中（`disconnect`）會停用切換方向按鈕，要先「停止」才能再切方向。
+  `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成 m/s）把路線切成每秒一個內插點；目前走到第幾個內插點記錄在 `point_idx`，中斷（停止／斷線）時會停在原點，之後從該點繼續。
   循環模式（來回往復）不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()`，
-  因此使用者中途勾選／取消勾選會在下一次抵達端點時生效；折返時會一併更新 `direction`、`action_name`
-  與 `pending_action`，並 emit `direction_changed`，讓按鈕文字跟著改成新的方向。
+  因此使用者中途勾選／取消勾選會在下一次抵達端點時生效；折返時會一併更新 `direction`（區域變數）、
+  `action_name`、`pending_action` 與 `self.direction`（記錄用），並 emit `direction_changed`，讓按鈕文字
+  跟著改成新的方向。
 - **固定定位模式（pin）**：`_walk_pin(sim)` 呼叫一次 `sim.set(lat, lon)` 後立刻把 `pending_action` 設回 `"pause"`，讓外層 while 迴圈進入 `await asyncio.sleep(0.2)` 的閒置分支，藉此在同一條長連線上「保持」定位，直到使用者按「停止」（其實已經是 pause 狀態，UI 只更新按鈕）或「恢復真實定位」。
 
 ### 地圖面板：QWebEngineView + Leaflet + QWebChannel
@@ -213,14 +217,16 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 `MainWindow._sync_btn_states()` 重置其他按鈕狀態。
 
 ### 控制按鈕狀態機（`MainWindow._sync_btn_states()`）
-- `busy`（`pending_action` 為 `forward`/`reverse`/`disconnect`）時停用「開始模擬」與「恢復真實定位」。
+- `busy`（`pending_action` 為 `forward`/`reverse`/`disconnect`）時停用「開始移動」與「恢復真實定位」。
 - `holding`（已連線且 `pending_action == "pause"`）時「停止」仍要可按——固定定位模式啟動後會立刻回到
   `"pause"`，此時連線還在，若停用「停止」會跟 `_walk_pin()` 印出的提示訊息互相矛盾。
 - 「恢復真實定位」在 `session_active` 為 False 時（從未連線或已斷線）停用；移動中按下會先跳警告要求
   使用者先按「停止」。
-- `_update_return_btn_state()` 判斷「已啟動」是看 `pending_action` 是否已經是 `forward`/`reverse`，
-  **不是**只看 `session_active`——後者要等背景協程真的連上裝置才會變 True，且沒有訊號通知 UI。
-  按鈕文字顯示「按下去會往哪裡走」：目前是 `"reverse"` 就顯示「往終點」，否則顯示「往起點」。
+- `_update_return_btn_state()`（切換方向鈕）：因為切換方向本身不會啟動移動，不需要等
+  `session_active`／連線完成，路線模式下隨時可切；只有 `pending_action` 為 `forward`/`reverse`/
+  `disconnect`（移動中或斷線中）才停用，避免中途切換造成方向跟目前實際走的方向不一致，要先
+  按「停止」才能再切。按鈕文字顯示「按下去會變成哪個方向」：`session.direction` 目前是
+  `"reverse"` 就顯示「往終點」，否則顯示「往起點」。
 - 連線結束（正常斷線或出錯）時 `_on_session_ended()` 會先把 `pending_action` 歸零成 `"pause"` 再同步
   按鈕，否則殘留的 `"disconnect"` 會讓按鈕全部卡在停用。
 
@@ -306,7 +312,7 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   表格的刪除欄與地圖節點彈出視窗的「刪除此點」都走這個方法，兩邊共用同一道下限檢查——新增其他
   刪除入口時也要接到這裡，不要各自呼叫 `model.remove_point()`。
 - 標題列除了「新增點」還有「清空座標點」（`model.clear()`）：清空後路線只剩 0 個點，要重新在地圖上
-  點或載入最愛才能再開始模擬。
+  點或載入最愛才能再開始移動。
 - `_update_info()` 由 `RouteTableModel` 的 `on_changed` callback 觸發，每次表格變動就重算總距離、依目前
   速度估算的預計時間與節點數，顯示在「路線座標點」標題右邊。
 

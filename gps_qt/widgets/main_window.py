@@ -114,11 +114,11 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_col)
 
         btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("開始模擬")
+        self.start_btn = QPushButton("開始移動")
         self.start_btn.clicked.connect(self._start)
         btn_row.addWidget(self.start_btn)
         self.return_btn = QPushButton("往起點")
-        self.return_btn.clicked.connect(self._reverse)
+        self.return_btn.clicked.connect(self._toggle_direction)
         btn_row.addWidget(self.return_btn)
         self.stop_btn = QPushButton("停止")
         theme.mark_class(self.stop_btn, "danger")
@@ -218,7 +218,7 @@ class MainWindow(QMainWindow):
     # ── 模式切換 ────────────────────
     def _switch_mode(self, mode):
         self.mode = mode
-        self.start_btn.setText("開始模擬" if mode == "route" else "固定定位")
+        self.start_btn.setText("開始移動" if mode == "route" else "固定定位")
         self._sync_coord_panels()
         self.map_panel.set_mode(mode)
         self.route_mode_btn.setChecked(mode == "route")
@@ -353,26 +353,34 @@ class MainWindow(QMainWindow):
         # 避免使用者誤以為是這趟才剛顯示的。hide() 會讓還在顯示中的
         # balloon/toast 一併消失；_on_route_finished() 需要通知時會再 show()。
         self.tray_icon.hide()
-        self._log("固定定位模式啟動..." if self.mode == "pin" else "開始模擬...")
-        self.session.start_forward()
+        self._log("固定定位模式啟動..." if self.mode == "pin" else "開始移動...")
+        if self.mode == "route":
+            # 依目前「切換方向」按鈕設定的方向開始移動；固定定位模式沒有
+            # 方向概念，一律往前（start_forward() 內部即固定為 "forward"）。
+            self.session.start()
+        else:
+            self.session.start_forward()
         self._sync_btn_states()
 
     def _stop(self):
         self.session.stop()
         self._log("停止中...")
 
-    def _reverse(self):
+    def _toggle_direction(self):
+        # 單純切換「下次開始移動」要走的方向，不會啟動移動——真正開始移動
+        # 要另外按「開始移動」。移動中會被 _update_return_btn_state() 停用，
+        # 理論上按不到，這裡仍防禦性擋一次。
         if self.mode != "route":
             return
         if len(self.route_panel.route) < 2:
             QMessageBox.critical(self, "錯誤", "請至少設定 2 個路線點")
             return
-        self.session.reverse()
+        self.session.toggle_direction()
         self._sync_btn_states()
-        if self.session.pending_action == "reverse":
-            self._log("已切換方向：往起點走...")
+        if self.session.direction == "reverse":
+            self._log("已切換方向：下次開始移動將往起點走")
         else:
-            self._log("已切換方向：往終點走...")
+            self._log("已切換方向：下次開始移動將往終點走")
 
     def _restore_real_location(self):
         if not self.session.session_active:
@@ -408,8 +416,8 @@ class MainWindow(QMainWindow):
         holding = self.session.session_active and self.session.pending_action == "pause"
         self.start_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(self.session.pending_action in ("forward", "reverse") or holding)
-        # 從未成功連線（尚未按過「開始模擬」，或已恢復真實定位斷線）時，
-        # 「恢復真實定位」沒有意義，初始化時只留「開始模擬」可以點擊。
+        # 從未成功連線（尚未按過「開始移動」，或已恢復真實定位斷線）時，
+        # 「恢復真實定位」沒有意義，初始化時只留「開始移動」可以點擊。
         self.restore_btn.setEnabled(self.session.session_active and not busy)
         self._update_return_btn_state()
         # 模擬移動中鎖住地圖編輯，避免走到一半路線被改掉；固定定位「保持中」
@@ -417,24 +425,15 @@ class MainWindow(QMainWindow):
         self.map_panel.set_locked(self.session.pending_action in ("forward", "reverse"))
 
     def _update_return_btn_state(self):
-        # 返回鈕現在只是「切換方向」，正在返回中也要能再按一次切回前進，
-        # 所以不再因 pending_action == "reverse" 而停用。「已啟動」不能只
-        # 看 session_active——那要等背景協程實際連上裝置才會變 True，
-        # 沒有訊號通知 UI，會卡到按「停止」觸發 paused 訊號才更新。改用
-        # pending_action 是否已經是 forward/reverse：按下「開始模擬」當下
-        # 就同步變成 forward，可以立刻切換方向，不用等連線完成。初始化時
-        # （尚未按過「開始模擬」）兩者皆為否，只留「開始模擬」可以點擊。
-        # 文字顯示「按下去會往哪裡走」：目前正往起點走就顯示「往終點」，
-        # 否則顯示「往起點」。
-        moving = self.session.pending_action in ("forward", "reverse")
-        started = moving or self.session.session_active
-        enabled = (
-            self.mode == "route"
-            and started
-            and self.session.pending_action != "disconnect"
-        )
-        self.return_btn.setEnabled(enabled)
-        self.return_btn.setText("往終點" if self.session.pending_action == "reverse" else "往起點")
+        # 切換方向鈕現在單純切換「下次開始移動」要走的方向，不會觸發移動，
+        # 所以不需要等連線／session_active，路線模式下隨時都能切換；但移動中
+        # （forward/reverse）或斷線中（disconnect）要停用，避免中途切換造成
+        # 「方向」與目前實際走的方向不一致，需要先按「停止」才能再切換。
+        # 文字顯示「按下去會變成哪個方向」：目前設定是往起點走（reverse）
+        # 就顯示「往終點」，否則顯示「往起點」。
+        busy = self.session.pending_action in ("forward", "reverse", "disconnect")
+        self.return_btn.setEnabled(self.mode == "route" and not busy)
+        self.return_btn.setText("往終點" if self.session.direction == "reverse" else "往起點")
 
     def _ensure_tunneld(self):
         """tunneld 沒在跑就提權啟動它；結果寫進執行日誌。"""

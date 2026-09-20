@@ -70,7 +70,7 @@ def launch_elevated():
         None, "runas", program, params or None, workdir, _SW_SHOWNORMAL
     )
     if result > _SHELL_EXECUTE_SUCCESS_THRESHOLD:
-        return True, "tunneld 啟動中，請稍候幾秒再按「開始模擬」。"
+        return True, "tunneld 啟動中，請稍候幾秒再按「開始移動」。"
     if result == _ERROR_CANCELLED:
         return False, "已取消系統管理員授權，tunneld 沒有啟動，無法連線 iPhone。"
     return False, f"啟動 tunneld 失敗（ShellExecute 回傳 {result}）。"

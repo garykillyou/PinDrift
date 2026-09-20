@@ -100,7 +100,7 @@ class RoutePlanner(QWidget):
         return False
 
     def cancel(self):
-        """取消進行中的點選（切換模式、開始模擬等情況）。"""
+        """取消進行中的點選（切換模式、開始移動等情況）。"""
         if self._state == IDLE:
             return
         self._state = IDLE

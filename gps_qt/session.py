@@ -44,6 +44,7 @@ class GPSSession(QObject):
 
         self.session_active = False
         self.pending_action = "pause"  # "forward" | "reverse" | "pause" | "disconnect"
+        self.direction = "forward"  # "forward" | "reverse"，下次「開始移動」要走的方向
         self.point_idx = 0
         self._task = None
 
@@ -52,14 +53,18 @@ class GPSSession(QObject):
         self.pending_action = "forward"
         self._ensure_task()
 
+    def start(self):
+        """路線模式的「開始移動」：依目前 self.direction 開始移動。"""
+        self.pending_action = self.direction
+        self._ensure_task()
+
     def stop(self):
         self.pending_action = "pause"
 
-    def reverse(self):
-        # 單純切換方向：目前不是在往回走就切成往回走，已經在往回走就切回
-        # 前進——不再是「固定走到起點才停」的一次性動作。
-        self.pending_action = "forward" if self.pending_action == "reverse" else "reverse"
-        self._ensure_task()
+    def toggle_direction(self):
+        """單純切換下次「開始移動」要走的方向，不會啟動移動——呼叫端要自行
+        確保目前不在移動中（UI 在移動中會停用切換方向按鈕）。"""
+        self.direction = "forward" if self.direction == "reverse" else "reverse"
 
     def restore_real_location(self):
         self.pending_action = "disconnect"
@@ -179,10 +184,11 @@ class GPSSession(QObject):
                 else:
                     self.log.emit("循環模式：已回到起點，再次出發")
                 direction = -direction
-                # 折返後，方向被動改變，pending_action/action_name 要跟著
-                # 更新，「往起點」/「往終點」按鈕文字才不會停留在舊方向。
+                # 折返後，方向被動改變，pending_action/action_name/direction
+                # 都要跟著更新，「往起點」/「往終點」按鈕文字才不會停留在舊方向。
                 action_name = "forward" if direction == 1 else "reverse"
                 self.pending_action = action_name
+                self.direction = action_name
                 self.direction_changed.emit()
                 idx = max(0, min(idx + direction, total - 1))
                 self.point_idx = idx
