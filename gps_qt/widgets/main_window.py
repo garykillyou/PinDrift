@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
-    QSplitter, QVBoxLayout, QWidget,
+    QSplitter, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
 from .. import persistence, theme, tunneld, window_geometry
@@ -74,6 +74,10 @@ class MainWindow(QMainWindow):
         self.session.session_ended.connect(self._on_session_ended)
         self.session.direction_changed.connect(self._sync_btn_states)
         self.session.position_changed.connect(self.map_panel.set_position)
+        self.session.route_finished.connect(self._on_route_finished)
+        self.tray_icon = QSystemTrayIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation), self
+        )
         self._connect_map()
         self._switch_mode("route")
         self._sync_btn_states()
@@ -345,6 +349,10 @@ class MainWindow(QMainWindow):
         if self.mode == "route" and len(self.route_panel.route) < 2:
             QMessageBox.critical(self, "錯誤", "請至少設定 2 個路線點")
             return
+        # 開始新的一趟之前，先清掉上一趟「已抵達端點」殘留的系統匣通知，
+        # 避免使用者誤以為是這趟才剛顯示的。hide() 會讓還在顯示中的
+        # balloon/toast 一併消失；_on_route_finished() 需要通知時會再 show()。
+        self.tray_icon.hide()
         self._log("固定定位模式啟動..." if self.mode == "pin" else "開始模擬...")
         self.session.start_forward()
         self._sync_btn_states()
@@ -383,6 +391,15 @@ class MainWindow(QMainWindow):
         # 否則殘留的 "disconnect" 會讓按鈕全部卡在停用。
         self.session.pending_action = "pause"
         self._sync_btn_states()
+
+    def _on_route_finished(self, message):
+        # 用系統匣提示而非 QMessageBox：跳出對話框會搶走焦點、中斷使用者正在
+        # 做的其他事（例如全螢幕遊戲），系統匣提示不會 activate 視窗。
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon.show()
+            self.tray_icon.showMessage(
+                "PinDrift", message, QSystemTrayIcon.MessageIcon.Information, 5000
+            )
 
     def _sync_btn_states(self):
         busy = self.session.pending_action in ("forward", "reverse", "disconnect")

@@ -25,6 +25,7 @@ class GPSSession(QObject):
     session_ended = Signal()         # 連線真正結束（對應原本 _on_session_ended）
     direction_changed = Signal()     # 循環模式在端點自動折返，方向被動改變
     position_changed = Signal(float, float)  # 每次實際注入座標（地圖即時位置/軌跡用）
+    route_finished = Signal(str)     # 非循環模式抵達端點，UI 用來彈出不搶焦點的提示
 
     def __init__(self, route_provider, speed_provider, pin_provider, mode_provider, loop_provider):
         """
@@ -188,9 +189,11 @@ class GPSSession(QObject):
                 continue
 
             if direction == 1:
-                self.log.emit("完成！保持於目前座標")
+                message = "已抵達終點，保持於目前座標"
             else:
-                self.log.emit("已返回起點，保持於目前座標")
+                message = "已返回起點，保持於目前座標"
+            self.log.emit(message)
             self.progress_label.emit("已完成")
+            self.route_finished.emit(message)
             self.pending_action = "pause"
             return
