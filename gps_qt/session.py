@@ -76,30 +76,36 @@ class GPSSession(QObject):
 
     # ── 核心狀態機 ────────────────────
     async def _session_main(self):
+        # 這個 try/finally 包住「整個」函式主體（含所有提早 return 的分支），
+        # 不能只包住 async with 那一段：搜尋裝置失敗／找不到裝置／匯入失敗這些
+        # 提早 return 也必須確實重設 session_active 並 emit session_ended，
+        # 否則 UI 會卡在按下「開始移動」當下的忙碌狀態（修過的 bug：卡住之後
+        # 連「停止」都救不回來，因為那時 _session_main() 早已結束，沒有任何
+        # task 在讀 pending_action，而 _stop() 本身也不會主動同步按鈕狀態）。
         try:
-            from pymobiledevice3.tunneld.api import get_tunneld_devices
-            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
-            from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
-        except ImportError as e:
-            self.log.emit("匯入失敗：" + str(e))
-            return
+            try:
+                from pymobiledevice3.tunneld.api import get_tunneld_devices
+                from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+                from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+            except ImportError as e:
+                self.log.emit("匯入失敗：" + str(e))
+                return
 
-        self.log.emit("搜尋裝置中...")
-        try:
-            rsds = await get_tunneld_devices()
-        except Exception as e:
-            self.log.emit("tunneld 連線失敗：" + str(e))
-            self.log.emit("   請先以系統管理員執行：python -m pymobiledevice3 remote tunneld")
-            return
+            self.log.emit("搜尋裝置中...")
+            try:
+                rsds = await get_tunneld_devices()
+            except Exception as e:
+                self.log.emit("tunneld 連線失敗：" + str(e))
+                self.log.emit("   請先以系統管理員執行：python -m pymobiledevice3 remote tunneld")
+                return
 
-        if not rsds:
-            self.log.emit("找不到裝置，請確認 USB 已連接")
-            return
+            if not rsds:
+                self.log.emit("找不到裝置，請確認 USB 已連接")
+                return
 
-        rsd = rsds[0]
-        self.log.emit("找到裝置：" + str(rsd.udid))
+            rsd = rsds[0]
+            self.log.emit("找到裝置：" + str(rsd.udid))
 
-        try:
             async with DvtProvider(rsd) as dvt, LocationSimulation(dvt) as sim:
                 self.session_active = True
                 while True:
