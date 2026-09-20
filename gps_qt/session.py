@@ -27,13 +27,15 @@ class GPSSession(QObject):
     position_changed = Signal(float, float)  # 每次實際注入座標（地圖即時位置/軌跡用）
     route_finished = Signal(str)     # 非循環模式抵達端點，UI 用來彈出不搶焦點的提示
 
-    def __init__(self, route_provider, speed_provider, pin_provider, mode_provider, loop_provider):
+    def __init__(self, route_provider, speed_provider, pin_provider, mode_provider, loop_provider,
+                 loop_style_provider):
         """
         route_provider: () -> list[[lat, lon, name], ...]，目前的路線點
         speed_provider: () -> float，移動速度（公尺/秒）
         pin_provider:   () -> (lat, lon)，固定定位模式的座標
         mode_provider:  () -> "pin" | "route"
-        loop_provider:  () -> bool，路線模式的循環（來回往復）開關
+        loop_provider:  () -> bool，路線模式的循環開關
+        loop_style_provider: () -> "bounce" | "circuit"，循環的走法（來回折返／迴圈瞬移回起點）
         """
         super().__init__()
         self._route_provider = route_provider
@@ -41,6 +43,7 @@ class GPSSession(QObject):
         self._pin_provider = pin_provider
         self._mode_provider = mode_provider
         self._loop_provider = loop_provider
+        self._loop_style_provider = loop_style_provider
 
         self.session_active = False
         self.pending_action = "pause"  # "forward" | "reverse" | "pause" | "disconnect"
@@ -147,9 +150,11 @@ class GPSSession(QObject):
         """direction=1 往路線終點走，direction=-1 往路線起點走回去。
         走到一半若 pending_action 被改成別的值（暫停/切換方向/斷線），會立刻
         中斷並把目前位置留在 self.point_idx，交回外層迴圈處理。不論這趟是由
-        「開始」還是「返回」觸發，每次走到終點/起點時都會即時讀取循環開關，
-        決定要不要折返繼續走，如此來回往復，直到 pending_action 被改成別的
-        值——因此使用者可以在路上隨時勾選/取消勾選，下次抵達端點就會生效。"""
+        「開始」還是「返回」觸發，每次走到終點/起點時都會即時讀取循環開關與
+        走法，決定要不要繼續走，直到 pending_action 被改成別的值——因此使用者
+        可以在路上隨時勾選/切換，下次抵達端點就會生效。循環有兩種走法：
+        「來回」（bounce）在端點折返、方向反轉；「迴圈」（circuit）方向不變，
+        瞬移回路線另一端繼續走，模擬繞圈。"""
         action_name = "forward" if direction == 1 else "reverse"
         if direction == -1:
             self.log.emit("返回中，沿路線往回走...")
@@ -182,9 +187,20 @@ class GPSSession(QObject):
             if interrupted:
                 return
 
-            # 走到端點才即時讀取循環開關，而不是在函式一開始就快取，這樣
-            # 使用者中途勾選/取消勾選才會在下一次抵達端點時生效。
+            # 走到端點才即時讀取循環開關/走法，而不是在函式一開始就快取，這樣
+            # 使用者中途勾選/切換才會在下一次抵達端點時生效。
             if self.pending_action == action_name and self._loop_provider():
+                if self._loop_style_provider() == "circuit":
+                    # 迴圈模式：方向不變，瞬移回路線另一端繼續走。
+                    if direction == 1:
+                        self.log.emit("迴圈模式：已抵達終點，返回起點繼續前進")
+                        idx = 0
+                    else:
+                        self.log.emit("迴圈模式：已回到起點，返回終點繼續前進")
+                        idx = total - 1
+                    self.point_idx = idx
+                    continue
+
                 if direction == 1:
                     self.log.emit("循環模式：已抵達終點，沿路線折返")
                 else:

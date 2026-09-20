@@ -4,7 +4,7 @@
 """
 
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView, QLabel,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView, QLabel,
     QPushButton, QTableView, QVBoxLayout,
 )
 
@@ -13,6 +13,11 @@ from ..geo import haversine
 from ..models import COL_DELETE, COL_INDEX, COL_LAT, COL_LON, COL_NOTE, DeleteButtonDelegate, RouteTableModel
 
 SPEED_PRESETS = [("步行 5 km/h", 5), ("慢跑 10 km/h", 10), ("騎車 20 km/h", 20), ("開車 40 km/h", 40)]
+
+# 循環模式的兩種走法：來回（bounce，抵達端點折返）／迴圈（circuit，抵達端點瞬移回另一端，方向不變）。
+LOOP_STYLE_BOUNCE = "bounce"
+LOOP_STYLE_CIRCUIT = "circuit"
+LOOP_STYLE_LABELS = [("來回（原路折返）", LOOP_STYLE_BOUNCE), ("迴圈（回到起點）", LOOP_STYLE_CIRCUIT)]
 
 
 DEFAULT_SPEED_KMH = 20.0
@@ -45,8 +50,15 @@ class RoutePanel(QFrame):
         self.speed_spin.setRange(0.1, 300.0)
         self.speed_spin.setValue(initial_speed)
         custom_row.addWidget(self.speed_spin)
-        self.loop_check = QCheckBox("循環模式（來回）")
+        self.loop_check = QCheckBox("循環模式")
         custom_row.addWidget(self.loop_check)
+        self.loop_style_combo = QComboBox()
+        for label, _value in LOOP_STYLE_LABELS:
+            self.loop_style_combo.addItem(label)
+        self.loop_style_combo.setEnabled(False)
+        theme.fit_combo_width(self.loop_style_combo)
+        self.loop_check.toggled.connect(self.loop_style_combo.setEnabled)
+        custom_row.addWidget(self.loop_style_combo)
         custom_row.addStretch(1)
         speed_layout.addLayout(custom_row)
         layout.addWidget(speed_card)
@@ -91,6 +103,9 @@ class RoutePanel(QFrame):
 
     def loop_enabled(self):
         return self.loop_check.isChecked()
+
+    def loop_style(self):
+        return LOOP_STYLE_LABELS[self.loop_style_combo.currentIndex()][1]
 
     def set_route(self, route):
         self.model.set_route(route)

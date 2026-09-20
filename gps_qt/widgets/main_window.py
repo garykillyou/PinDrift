@@ -66,6 +66,7 @@ class MainWindow(QMainWindow):
             pin_provider=lambda: self.pin_panel.coordinates(),
             mode_provider=lambda: self.mode,
             loop_provider=lambda: self.route_panel.loop_enabled(),
+            loop_style_provider=lambda: self.route_panel.loop_style(),
         )
         self.session.log.connect(self._log)
         self.session.progress_value.connect(lambda v: self.progress_bar.setValue(int(v * 1000)))

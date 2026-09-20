@@ -114,10 +114,15 @@ PinDrift/
   `pending_action` 設成目前的 `self.direction` 並真正開始移動。UI 在移動中（`pending_action` 為
   `forward`/`reverse`）或斷線中（`disconnect`）會停用切換方向按鈕，要先「停止」才能再切方向。
   `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成 m/s）把路線切成每秒一個內插點；目前走到第幾個內插點記錄在 `point_idx`，中斷（停止／斷線）時會停在原點，之後從該點繼續。
-  循環模式（來回往復）不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()`，
-  因此使用者中途勾選／取消勾選會在下一次抵達端點時生效；折返時會一併更新 `direction`（區域變數）、
-  `action_name`、`pending_action` 與 `self.direction`（記錄用），並 emit `direction_changed`，讓按鈕文字
-  跟著改成新的方向。
+  循環模式不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()` 與
+  `loop_style_provider()`，因此使用者中途勾選／切換走法會在下一次抵達端點時生效。循環有兩種走法
+  （[route_panel.py](gps_qt/widgets/route_panel.py) 的 `loop_style_combo`，僅在勾選循環模式時才啟用）：
+  - **來回（bounce）**：抵達端點折返，方向反轉，會一併更新 `direction`（區域變數）、`action_name`、
+    `pending_action` 與 `self.direction`（記錄用），並 emit `direction_changed`，讓按鈕文字跟著改成
+    新的方向。
+  - **迴圈（circuit）**：方向不變，`point_idx` 直接瞬移回路線另一端（往終點走完就跳回 `0`，往起點走
+    完就跳回 `total - 1`）再繼續走，模擬繞圈；不改 `direction`／`self.direction`，也不 emit
+    `direction_changed`，因為方向本身沒有變。
 - **固定定位模式（pin）**：`_walk_pin(sim)` 呼叫一次 `sim.set(lat, lon)` 後立刻把 `pending_action` 設回 `"pause"`，讓外層 while 迴圈進入 `await asyncio.sleep(0.2)` 的閒置分支，藉此在同一條長連線上「保持」定位，直到使用者按「停止」（其實已經是 pause 狀態，UI 只更新按鈕）或「恢復真實定位」。
 
 ### 地圖面板：QWebEngineView + Leaflet + QWebChannel
