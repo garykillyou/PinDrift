@@ -373,15 +373,16 @@ function setFavorites(json) {
 /* ── 路徑規劃的點選狀態 ─────────────────── */
 
 function setPickState(picking, json) {
-  // 起點選完後會停在這裡等終點，所以要把已選的點畫出來，
-  // 否則使用者無從得知剛才那一下有沒有被收到。
+  // 點選過程中每點一下都要把已選的點畫出來，否則使用者無從得知剛才
+  // 那一下有沒有被收到；點的數量不固定（多點依序點選，按「完成規劃」才結束），
+  // 所以標記文字用「起」與後續的點次序號，而不是固定的「起」「終」兩種。
   pickLayer.clearLayers();
   map.getContainer().classList.toggle("map-picking", picking);
   JSON.parse(json).forEach(function (point, index) {
     L.marker(point, {
       icon: L.divIcon({
         className: "",
-        html: '<div class="pick-pin">' + (index === 0 ? "起" : "終") + "</div>",
+        html: '<div class="pick-pin">' + (index === 0 ? "起" : String(index + 1)) + "</div>",
         iconSize: [28, 28],
         iconAnchor: [14, 14]
       }),

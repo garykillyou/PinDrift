@@ -1,9 +1,10 @@
-"""路徑規劃工具列：在地圖上點起點與終點，算出沿道路的路徑取代目前路線。
+"""路徑規劃工具列：在地圖上依序點選多個路徑點，算出沿道路的路徑取代目前路線。
 
 刻意從 MapPanel 拆出來成獨立 widget：MapPanel 的職責是「顯示地圖並轉發互動」，
-而這裡是一組自己的狀態機（等待起點 → 等待終點 → 查詢中），兩者混在一起會讓
-MapPanel 膨脹到不好讀。MapPanel 只負責把地圖點擊先問過這裡（handle_map_click），
-被吃掉就不當成新增座標點。
+而這裡是一組自己的狀態機（點選中 → 查詢中），兩者混在一起會讓 MapPanel 膨脹到
+不好讀。MapPanel 只負責把地圖點擊先問過這裡（handle_map_click），被吃掉就不當
+成新增座標點。點選數量不固定，靠使用者按「完成規劃」明確結束，而不是像兩點
+時那樣點第二下就自動觸發查詢。
 """
 
 from PySide6.QtCore import Signal
@@ -31,12 +32,12 @@ SIMPLIFY_PRESETS = [
 ]
 DEFAULT_SIMPLIFY_M = 5.0
 
-IDLE, PICKING_START, PICKING_END, ROUTING = range(4)
+IDLE, PICKING, ROUTING = range(3)
+
+MIN_WAYPOINTS = 2
 
 BUTTON_TEXT = {
     IDLE: "規劃路徑",
-    PICKING_START: "請點選起點（再按一次取消）",
-    PICKING_END: "請點選終點（再按一次取消）",
     ROUTING: "規劃中…",
 }
 
@@ -51,7 +52,7 @@ class RoutePlanner(QWidget):
         super().__init__(parent)
         self._settings = map_settings
         self._state = IDLE
-        self._start = None
+        self._points = []
 
         self._router = Router(self)
         self._router.route_ready.connect(self._on_route_ready)
@@ -64,6 +65,11 @@ class RoutePlanner(QWidget):
         theme.mark_class(self.plan_btn, "no-uppercase")
         self.plan_btn.clicked.connect(self._on_plan_clicked)
         layout.addWidget(self.plan_btn)
+
+        self.finish_btn = QPushButton("完成規劃")
+        theme.mark_class(self.finish_btn, "no-uppercase")
+        self.finish_btn.clicked.connect(self._on_finish_clicked)
+        layout.addWidget(self.finish_btn)
 
         layout.addWidget(QLabel("移動方式："))
         self.costing_combo = _build_combo(
@@ -84,27 +90,22 @@ class RoutePlanner(QWidget):
     # ── 狀態機 ────────────────────
     def handle_map_click(self, lat, lon):
         """由 MapPanel 轉發地圖點擊。回傳 True 代表這次點擊已被路徑規劃吃掉，
-        呼叫端就不該再把它當成「新增一個座標點」。"""
-        if self._state == PICKING_START:
-            self._start = (lat, lon)
-            self._state = PICKING_END
-            self.log.emit(f"路徑規劃：已選起點 {lat:.6f}, {lon:.6f}，請點選終點")
-            self._sync_button()
-            return True
-        if self._state == PICKING_END:
-            self._state = ROUTING
-            self._sync_button()
-            self.log.emit(f"路徑規劃：已選終點 {lat:.6f}, {lon:.6f}，計算沿道路的路徑中…")
-            self._router.route(self._start, (lat, lon), self.costing_combo.currentData())
-            return True
-        return False
+        呼叫端就不該再把它當成「新增一個座標點」。點選會依序累積，湊滿至少
+        MIN_WAYPOINTS 個點後由使用者按「完成規劃」才觸發查詢——多點的情況下
+        無法像兩點時那樣靠「點第二下」自動判斷已經點完。"""
+        if self._state != PICKING:
+            return False
+        self._points.append((lat, lon))
+        self.log.emit(f"路徑規劃：已選第 {len(self._points)} 點 {lat:.6f}, {lon:.6f}")
+        self._sync_button()
+        return True
 
     def cancel(self):
         """取消進行中的點選（切換模式、開始移動等情況）。"""
         if self._state == IDLE:
             return
         self._state = IDLE
-        self._start = None
+        self._points = []
         self._sync_button()
 
     def _on_plan_clicked(self):
@@ -112,26 +113,39 @@ class RoutePlanner(QWidget):
         if self._state == ROUTING:
             return
         if self._state == IDLE:
-            self._state = PICKING_START
-            self._start = None
-            self.log.emit("路徑規劃：請在地圖上點選起點")
+            self._state = PICKING
+            self._points = []
+            self.log.emit(f"路徑規劃：請依序點選路徑點（至少 {MIN_WAYPOINTS} 點），完成後按「完成規劃」")
         else:
             self._state = IDLE
-            self._start = None
+            self._points = []
             self.log.emit("路徑規劃：已取消")
         self._sync_button()
 
+    def _on_finish_clicked(self):
+        if self._state != PICKING or len(self._points) < MIN_WAYPOINTS:
+            return
+        waypoints = self._points
+        self._state = ROUTING
+        self._sync_button()
+        self.log.emit(f"路徑規劃：已選 {len(waypoints)} 點，計算沿道路的路徑中…")
+        self._router.route(waypoints, self.costing_combo.currentData())
+
     def _sync_button(self):
-        self.plan_btn.setText(BUTTON_TEXT[self._state])
+        if self._state == PICKING:
+            self.plan_btn.setText(f"點選中，已選 {len(self._points)} 點（再按一次取消）")
+        else:
+            self.plan_btn.setText(BUTTON_TEXT[self._state])
         self.plan_btn.setEnabled(self._state != ROUTING)
-        picking = self._state in (PICKING_START, PICKING_END)
-        picked = [[self._start[0], self._start[1]]] if self._start else []
-        self.pick_state_changed.emit(picking, bounds_payload(picked))
+        self.finish_btn.setVisible(self._state == PICKING)
+        self.finish_btn.setEnabled(len(self._points) >= MIN_WAYPOINTS)
+        picked = [[lat, lon] for lat, lon in self._points]
+        self.pick_state_changed.emit(self._state == PICKING, bounds_payload(picked))
 
     # ── 查詢結果 ────────────────────
     def _on_route_ready(self, points, length_km, time_sec):
         self._state = IDLE
-        self._start = None
+        self._points = []
         self._sync_button()
 
         tolerance = self.simplify_combo.currentData()
@@ -149,7 +163,7 @@ class RoutePlanner(QWidget):
 
     def _on_failed(self, message):
         self._state = IDLE
-        self._start = None
+        self._points = []
         self._sync_button()
         self.log.emit(message)
 

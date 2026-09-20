@@ -1,6 +1,6 @@
 """路徑規劃：Valhalla（FOSSGIS 公用實例）。
 
-沿實際道路算出兩點之間的路徑，取代原本兩點之間走直線的內插。選 Valhalla 的
+沿實際道路算出依序經過多個點的路徑，取代原本點與點之間走直線的內插。選 Valhalla 的
 公用實例是因為它不需要申請 API 金鑰，而且支援步行／單車／開車三種 costing——
 步行與開車算出來的路線差很多（行人可走巷弄、階梯、公園，車輛只能走車道），
 對這個工具來說是必要的區分。
@@ -45,8 +45,8 @@ class Router(QObject):
         self._reply = None
         self._last_request_ms = 0
 
-    def route(self, start, end, costing=COSTING_PEDESTRIAN):
-        """start / end 為 (lat, lon)。"""
+    def route(self, waypoints, costing=COSTING_PEDESTRIAN):
+        """waypoints 為 [(lat, lon), ...]，依序經過每一點，至少要有 2 個。"""
         now = QDateTime.currentMSecsSinceEpoch()
         if now - self._last_request_ms < MIN_REQUEST_INTERVAL_MS:
             self.failed.emit("路徑規劃請求太頻繁，請稍候再試")
@@ -59,8 +59,7 @@ class Router(QObject):
         request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, USER_AGENT)
         body = json.dumps({
             "locations": [
-                {"lat": float(start[0]), "lon": float(start[1])},
-                {"lat": float(end[0]), "lon": float(end[1])},
+                {"lat": float(lat), "lon": float(lon)} for lat, lon in waypoints
             ],
             "costing": costing,
             "directions_options": {"units": "kilometers"},
