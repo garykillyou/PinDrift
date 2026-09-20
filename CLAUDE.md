@@ -93,7 +93,7 @@ PinDrift/
     └── widgets/
         ├── main_window.py      # 整體版面、控制按鈕狀態機、模式切換、地圖連動
         ├── map_panel.py        # QWebEngineView + Qt 原生工具列（搜尋/圖磚/跟隨/清軌跡）
-        ├── route_planner.py    # 路徑規劃工具列：點起訖點 → 算出沿道路的路線
+        ├── route_planner.py    # 路徑規劃工具列：依序點選多個路徑點 → 算出沿道路的路線
         ├── pin_panel.py        # 固定定位模式面板（含座標貼上攔截）
         ├── route_panel.py      # 路線模式面板（速度設定 + 路線表格）
         └── favorites_panel.py  # 最愛清單
@@ -105,6 +105,10 @@ PinDrift/
 2. 按「開始移動」時，[session.py](gps_qt/session.py) 的 `GPSSession._session_main()` 用 `asyncio.ensure_future()` 建立一個常駐 task，`async with DvtProvider(rsd) as dvt, LocationSimulation(dvt) as sim:` 開一次連線後就常駐在 while 迴圈裡；後續按「停止」都**不會**重建 task 或重新連線，只是改變 `self.pending_action` 這個共享狀態（`"forward" | "reverse" | "pause" | "disconnect"`），由 while 迴圈讀取並分派動作。「往起點／往終點」（切換方向）本身**不會**碰觸 `pending_action`，只改變下面提到的 `self.direction`。
 3. 直到 `pending_action == "disconnect"`（使用者按「恢復真實定位」）才 `break` 出迴圈、呼叫 `sim.clear()` 並讓 `async with` 關閉連線——恢復真實 GPS 只會在明確斷線時發生，單純停止都仍保持模擬連線在目前座標。
 4. 座標注入本身是 `sim.set(lat, lon)`，呼叫位置在 `_walk_route()` / `_walk_pin()` 這兩個由 `_session_main()` 依 `pending_action` 呼叫的協程裡。
+5. `_session_main()` 的 `try/finally` **包住整個函式主體**，不是只包 `async with` 那一段（修過的 bug）：
+   匯入失敗／tunneld 連線失敗／找不到裝置這些提早 `return` 的分支也必須重設 `session_active` 並 emit
+   `session_ended`，否則 UI 會卡在按下「開始移動」當下的忙碌狀態，連「停止」都救不回來——那時
+   `_session_main()` 早已結束，沒有任何 task 在讀 `pending_action`，而 `_stop()` 本身也不會主動同步按鈕狀態。
 
 ### 兩種模式（由 `MainWindow.mode` 控制，動作由 `pending_action` 驅動）
 - **路線模式（route）**：`_walk_route(sim, direction)` 中 `direction=1` 往終點走、`direction=-1` 往起點走回去。
@@ -190,6 +194,9 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
 
 - **服務是 Valhalla 的 FOSSGIS 公用實例**，不需要 API 金鑰，支援 `pedestrian`／`bicycle`／`auto`
   三種 costing。**這是社群維運的免費服務，政策是「合理使用」**，不要拿來做批次查詢。
+- **`Router.route()` 收的是 `waypoints` 串列（至少兩點，沒有上限）**，原封不動對應請求裡的
+  `locations`，服務會依序經過每一點；一次多點查詢比起分段查再自己接起來，轉彎與路口的處理
+  由服務決定，也只算一次請求（有每秒一次的限制）。
 - **`shape` 是精度 1e6 的 polyline**（一般的 Google polyline 是 1e5）。用錯精度不會報錯，
   只會讓座標差十倍，所以 `POLYLINE_PRECISION` 寫成具名常數，並有一個測試專門釘住這件事。
 - **多個 leg 的接縫點會重複**（前一段的終點等於下一段的起點），`parse_route()` 會去掉重複的
@@ -198,15 +205,20 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   座標表格會難以手動微調，所以用 `geo.douglas_peucker()` 抽稀，預設容差 5 公尺（實測降到 22 點，
   路形肉眼看不出差別）。`douglas_peucker()` **刻意用顯式堆疊而非遞迴**：遞迴版深度最壞等於點數，
   上千點會撞到 Python 的遞迴上限。
-- **點選狀態機在 `RoutePlanner`**（IDLE → PICKING_START → PICKING_END → ROUTING），刻意不放在
+- **點選狀態機在 `RoutePlanner`**（IDLE → PICKING → ROUTING），刻意不放在
   `MapPanel` 裡：後者的職責是「顯示地圖並轉發互動」，混進來會讓它膨脹到不好讀。`MapPanel._on_map_clicked()`
   一律先問過 `route_planner.handle_map_click()`，**被吃掉就不能再當成新增座標點**——新增任何
   「會攔截地圖點擊」的功能都要沿用這個「攔截成功才吃掉事件」的形狀。
+- **點選幾個點不固定，所以結束點選要由使用者明確表示**：`handle_map_click()` 每次只是把座標累積
+  進 `self._points`，湊滿 `MIN_WAYPOINTS`(2) 之後由「完成規劃」（`finish_btn`，只在 PICKING 狀態
+  顯示）觸發查詢。只支援起訖兩點時可以「點第二下就自動送出」，多點則沒有任何訊號能判斷使用者
+  點完了，狀態機不能再靠點擊次數推進——之後若要加「插入中途點」這類功能也要沿用同一個形狀。
 - 切到固定定位模式或模擬開始移動（編輯鎖）時都要呼叫 `route_planner.cancel()`，否則按鈕會卡在
-  「請點選終點」卻永遠等不到點擊。
+  「點選中，已選 N 點」卻永遠等不到下一次點擊，也按不到「完成規劃」。
 - **點選過程要在地圖上看得見**：`pick_state_changed(picking, points_json)` 這條 bridge signal 讓
-  `map.js` 切換 `map-picking` 十字游標，並把已選的起點畫成「起」標記。選完起點後流程會停在原地等
-  終點，沒有這個回饋使用者無從判斷剛才那一下有沒有被收到。
+  `map.js` 切換 `map-picking` 十字游標，並把已選的點依序畫成「起」「2」「3」…的標記（點數不固定，
+  所以標記文字用序號而不是固定的「起」「終」兩種）；`RoutePlanner` 的按鈕文字同步顯示「已選 N 點」。
+  沒有這些回饋，使用者無從判斷剛才那一下有沒有被收到、也不知道還差幾點才能按「完成規劃」。
 - 算完的路線由 `MainWindow._on_route_computed()` **整條取代**目前路線，同時 `fit_to()` 拉視野、
   `clear_trail()` 清軌跡——路線都換了，舊軌跡沒有參考價值。`_load_favorite()` 載入最愛時同理。
 
@@ -214,7 +226,8 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
 [main.py](gps_qt/main.py) 用 `qasync.QEventLoop` 包住 `QApplication` 並 `asyncio.set_event_loop(loop)`，讓 asyncio
 事件迴圈直接跑在 Qt 事件迴圈的同一條 thread 上，因此 `GPSSession._session_main()`／`_walk_route()`／
 `_walk_pin()` 可以直接是 async 方法，不需要背景 thread、也不需要跨執行緒 marshalling。`GPSSession` 用
-Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`direction_changed`）把狀態
+Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`direction_changed`／
+`position_changed`（地圖即時位置與軌跡）／`route_finished`（抵達端點的系統匣通知））把狀態
 送出，`MainWindow.__init__` 用 `.connect()` 接對應的 slot。
 
 新增/修改任何動作（`pending_action` 的新值）時，需同步確認：(a) `_session_main()` 的 if/elif 分派邏輯、
@@ -234,6 +247,11 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   `"reverse"` 就顯示「往終點」，否則顯示「往起點」。
 - 連線結束（正常斷線或出錯）時 `_on_session_ended()` 會先把 `pending_action` 歸零成 `"pause"` 再同步
   按鈕，否則殘留的 `"disconnect"` 會讓按鈕全部卡在停用。
+- **抵達端點的提示走系統匣、不用 `QMessageBox`**：沒開循環模式時 `_walk_route()` emit
+  `route_finished(message)`，`MainWindow._on_route_finished()` 用 `QSystemTrayIcon.showMessage()` 顯示。
+  對話框會搶焦點、打斷使用者正在做的事（例如全螢幕遊戲），系統匣提示不會 activate 視窗。
+  `_start()` 會先 `tray_icon.hide()` 清掉上一趟殘留的通知（`hide()` 會讓還在顯示中的 balloon 一併消失），
+  否則使用者會把舊的 toast 誤認成這趟剛跳出來的。
 
 ### 主題系統：qt-material，一個重要陷阱
 - [theme.py](gps_qt/theme.py) 的 `apply()` 呼叫 `qt_material.apply_stylesheet(app, theme=..., invert_secondary=...)`
