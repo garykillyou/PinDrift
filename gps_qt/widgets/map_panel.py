@@ -220,8 +220,8 @@ class MapPanel(QFrame):
 
     def set_locked(self, locked):
         self._locked = locked
-        # 模擬移動中地圖不接受點擊，正在點選起訖點的流程要跟著中止，
-        # 否則按鈕會一直停在「請點選終點」卻永遠等不到。
+        # 模擬移動中地圖不接受點擊，正在進行的路徑點點選流程要跟著中止，
+        # 否則按鈕會一直停在「點選中，已選 N 點」卻永遠等不到下一次點擊。
         self.route_planner.setEnabled(not locked)
         if locked:
             self.route_planner.cancel()

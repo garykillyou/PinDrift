@@ -71,7 +71,7 @@ html, body {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
 }
 
-/* ── 路徑規劃：點選起訖點 ── */
+/* ── 路徑規劃：依序點選路徑點 ── */
 /* Leaflet 自己會在容器上設 grab 游標，要蓋過去才會變成十字準心 */
 .map-picking {
   cursor: crosshair !important;
