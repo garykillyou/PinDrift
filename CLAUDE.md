@@ -79,7 +79,8 @@ PinDrift/
     ├── paths.py             # 資源／使用者資料的路徑解析（打包後兩者要分開）
     ├── tunneld.py           # tunneld 偵測 + 提權啟動；也是 tunneld 子行程的本體
     ├── theme.py             # qt-material 主題套用、字級覆寫、danger/success 語意色
-    ├── geo.py               # haversine()、interpolate_points()、douglas_peucker()
+    ├── geo.py               # haversine()、interpolate_points()、douglas_peucker()、
+    │                        # cumulative_distances()／index_at_distance()（進度換算）
     ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
@@ -117,16 +118,26 @@ PinDrift/
   純粹只是記錄「下次按開始移動要往哪走」；`GPSSession.start()`（由「開始移動」按鈕觸發）才會把
   `pending_action` 設成目前的 `self.direction` 並真正開始移動。UI 在移動中（`pending_action` 為
   `forward`/`reverse`）或斷線中（`disconnect`）會停用切換方向按鈕，要先「停止」才能再切方向。
-  `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成 m/s）把路線切成每秒一個內插點；目前走到第幾個內插點記錄在 `point_idx`，中斷（停止／斷線）時會停在原點，之後從該點繼續。
+  `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成
+  m/s）把路線切成每秒一個內插點。**進度記在 `travelled_m`（已走到路線的第幾公尺），不是「第幾個內插
+  點」**（修過的 bug）：內插點的數量由速度決定，停止期間改過速度後同一個索引對到的位置完全不同，而
+  `min(idx, total - 1)` 這種夾取會把超出範圍的索引直接夾到最後一點——實測 2.2 公里的路線以 5 km/h 走到
+  中途是第 794 個點（共 1589 個），改成 60 km/h 後只剩 134 個點，再按「開始移動」人就瞬移到終點。距離
+  與速度無關，所以 `_walk_route()` 的每一輪都重算 `geo.cumulative_distances()`，再用
+  `geo.index_at_distance()`（二分搜尋取最接近者）把 `travelled_m` 換算成這份內插結果裡的索引；中斷
+  （停止／斷線）時會停在原地，之後從該處繼續。整條路線被換掉時則由 `GPSSession.reset_progress()` 歸零
+  ——舊的已走距離對新路線沒有意義。觸發點是 `RouteTableModel` 的 `modelReset`，它只在 `set_route()`／
+  `clear()` 發出，剛好對應「載入最愛」「路徑規劃算完」「清空座標點」三個整條替換的入口，不會被單點
+  編輯誤觸。新增任何會整批換掉路線的入口時，要確認它有走到 `set_route()`／`clear()`。
   循環模式不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()` 與
   `loop_style_provider()`，因此使用者中途勾選／切換走法會在下一次抵達端點時生效。循環有兩種走法
   （[route_panel.py](gps_qt/widgets/route_panel.py) 的 `loop_style_combo`，僅在勾選循環模式時才啟用）：
   - **來回（bounce）**：抵達端點折返，方向反轉，會一併更新 `direction`（區域變數）、`action_name`、
     `pending_action` 與 `self.direction`（記錄用），並 emit `direction_changed`，讓按鈕文字跟著改成
     新的方向。
-  - **迴圈（circuit）**：方向不變，`point_idx` 直接瞬移回路線另一端（往終點走完就跳回 `0`，往起點走
-    完就跳回 `total - 1`）再繼續走，模擬繞圈；不改 `direction`／`self.direction`，也不 emit
-    `direction_changed`，因為方向本身沒有變。
+  - **迴圈（circuit）**：方向不變，索引直接瞬移回路線另一端（往終點走完就跳回 `0`，往起點走完就跳
+    回 `total - 1`，`travelled_m` 一併更新成該點的累積距離）再繼續走，模擬繞圈；不改 `direction`／
+    `self.direction`，也不 emit `direction_changed`，因為方向本身沒有變。
 - **固定定位模式（pin）**：`_walk_pin(sim)` 呼叫一次 `sim.set(lat, lon)` 後立刻把 `pending_action` 設回 `"pause"`，讓外層 while 迴圈進入 `await asyncio.sleep(0.2)` 的閒置分支，藉此在同一條長連線上「保持」定位，直到使用者按「停止」（其實已經是 pause 狀態，UI 只更新按鈕）或「恢復真實定位」。
 
 ### 地圖面板：QWebEngineView + Leaflet + QWebChannel
@@ -231,7 +242,7 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 送出，`MainWindow.__init__` 用 `.connect()` 接對應的 slot。
 
 新增/修改任何動作（`pending_action` 的新值）時，需同步確認：(a) `_session_main()` 的 if/elif 分派邏輯、
-(b) 對應的 `_walk_*()` 如何在動作被外部改變時中斷並保留 `point_idx`、(c) 觸發該動作的按鈕要如何在
+(b) 對應的 `_walk_*()` 如何在動作被外部改變時中斷並保留 `travelled_m`、(c) 觸發該動作的按鈕要如何在
 `MainWindow._sync_btn_states()` 重置其他按鈕狀態。
 
 ### 控制按鈕狀態機（`MainWindow._sync_btn_states()`）
