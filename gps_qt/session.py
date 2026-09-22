@@ -14,7 +14,7 @@ import asyncio
 
 from PySide6.QtCore import QObject, Signal
 
-from .geo import interpolate_points
+from .geo import cumulative_distances, index_at_distance, interpolate_points
 
 
 class GPSSession(QObject):
@@ -48,7 +48,10 @@ class GPSSession(QObject):
         self.session_active = False
         self.pending_action = "pause"  # "forward" | "reverse" | "pause" | "disconnect"
         self.direction = "forward"  # "forward" | "reverse"，下次「開始移動」要走的方向
-        self.point_idx = 0
+        # 進度記「已走到路線的第幾公尺」而不是「第幾個內插點」：內插點的數量
+        # 由速度決定，停止時改速度（或編輯路線）會讓舊索引對到完全不同的位置，
+        # 索引過大時還會被夾到最後一點，再按「開始移動」人就直接瞬移到終點。
+        self.travelled_m = 0.0
         self._task = None
 
     # ── 外部呼叫的動作：對應原本四顆按鈕 ────────────────────
@@ -71,6 +74,10 @@ class GPSSession(QObject):
 
     def restore_real_location(self):
         self.pending_action = "disconnect"
+
+    def reset_progress(self):
+        """整條路線被換掉時歸零進度——舊的已走距離對新路線沒有意義。"""
+        self.travelled_m = 0.0
 
     def _ensure_task(self):
         if self._task and not self._task.done():
@@ -128,7 +135,7 @@ class GPSSession(QObject):
                         self.paused.emit()
 
                 await sim.clear()
-                self.point_idx = 0
+                self.travelled_m = 0.0
                 self.log.emit("已恢復真實定位")
                 self.progress_value.emit(0.0)
                 self.progress_label.emit("已恢復真實定位")
@@ -149,7 +156,7 @@ class GPSSession(QObject):
     async def _walk_route(self, sim, direction):
         """direction=1 往路線終點走，direction=-1 往路線起點走回去。
         走到一半若 pending_action 被改成別的值（暫停/切換方向/斷線），會立刻
-        中斷並把目前位置留在 self.point_idx，交回外層迴圈處理。不論這趟是往終點
+        中斷並把已走距離留在 self.travelled_m，交回外層迴圈處理。不論這趟是往終點
         還是往起點走，每次走到端點時都會即時讀取循環開關與走法，決定要不要繼續
         走，直到 pending_action 被改成別的值——使用者可以在路上隨時勾選或切換，
         下次抵達端點就會生效。循環有兩種走法：
@@ -159,14 +166,16 @@ class GPSSession(QObject):
         if direction == -1:
             self.log.emit("返回中，沿路線往回走...")
 
-        idx = self.point_idx
         while True:
             suffix = "" if direction == 1 else "（返回中）"
             speed = self._speed_provider()
             route = self._route_provider()
             points = interpolate_points([(r[0], r[1], "") for r in route], speed, 1.0)
             total = len(points)
-            idx = max(0, min(idx, total - 1))
+            # 每一輪都重算：速度或路線在停止期間被改過的話，內插點的數量與間距
+            # 都會不同，必須用已走距離重新換算成這份內插結果裡的索引。
+            cumulative = cumulative_distances(points)
+            idx = index_at_distance(cumulative, self.travelled_m)
             idx_range = range(idx, total) if direction == 1 else range(idx, -1, -1)
 
             interrupted = False
@@ -178,7 +187,7 @@ class GPSSession(QObject):
                 await sim.set(lat, lon)
                 self.position_changed.emit(lat, lon)
                 idx = i
-                self.point_idx = i
+                self.travelled_m = cumulative[i]
                 frac = (i + 1) / total if direction == 1 else i / total
                 self.progress_value.emit(frac)
                 self.progress_label.emit(f"{frac*100:.1f}%  {lat:.6f}, {lon:.6f}{suffix}")
@@ -198,7 +207,7 @@ class GPSSession(QObject):
                     else:
                         self.log.emit("迴圈模式：已回到起點，返回終點繼續前進")
                         idx = total - 1
-                    self.point_idx = idx
+                    self.travelled_m = cumulative[idx]
                     continue
 
                 if direction == 1:
@@ -213,7 +222,7 @@ class GPSSession(QObject):
                 self.direction = action_name
                 self.direction_changed.emit()
                 idx = max(0, min(idx + direction, total - 1))
-                self.point_idx = idx
+                self.travelled_m = cumulative[idx]
                 continue
 
             if direction == 1:

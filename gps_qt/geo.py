@@ -1,5 +1,6 @@
 """路線幾何計算：純函式，不相依任何 UI 框架。"""
 
+import bisect
 import math
 
 
@@ -63,6 +64,32 @@ def douglas_peucker(points, tolerance_m):
             stack.append((first, farthest))
             stack.append((farthest, last))
     return [point for point, kept in zip(points, keep) if kept]
+
+
+def cumulative_distances(points):
+    """回傳與 points 等長的累積距離（公尺），[0] 固定為 0。
+
+    內插點的「第幾個」會隨速度改變（速度越快點越少），但「走到路線的第幾公尺」
+    不會，所以進度一律用距離記錄，再由 index_at_distance() 換回目前這份內插
+    結果的索引。
+    """
+    totals = [0.0]
+    for (lat1, lon1), (lat2, lon2) in zip(points, points[1:]):
+        totals.append(totals[-1] + haversine(lat1, lon1, lat2, lon2))
+    return totals
+
+
+def index_at_distance(cumulative, distance_m):
+    """在 cumulative（遞增的累積距離）裡找出最接近 distance_m 的索引。"""
+    if not cumulative:
+        return 0
+    pos = bisect.bisect_left(cumulative, distance_m)
+    if pos <= 0:
+        return 0
+    if pos >= len(cumulative):
+        return len(cumulative) - 1
+    before, after = cumulative[pos - 1], cumulative[pos]
+    return pos if (after - distance_m) < (distance_m - before) else pos - 1
 
 
 def interpolate_points(route, speed_ms, interval_sec):

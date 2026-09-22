@@ -280,6 +280,10 @@ class MainWindow(QMainWindow):
         model.rowsInserted.connect(self._push_route_to_map)
         model.rowsRemoved.connect(self._push_route_to_map)
         model.modelReset.connect(self._push_route_to_map)
+        # modelReset 只有在 set_route()／clear() 時才發出，也就是「整條路線被換掉」
+        # 的兩個入口（載入最愛、路徑規劃算完、清空座標點）。舊的已走距離對新路線
+        # 沒有意義，不歸零的話按「開始移動」會從新路線的某個中途點開始走。
+        model.modelReset.connect(self.session.reset_progress)
         self.pin_panel.lat_spin.valueChanged.connect(self._push_pin_to_map)
         self.pin_panel.lon_spin.valueChanged.connect(self._push_pin_to_map)
         self.favorites_panel.favorites_changed.connect(self._push_favorites_to_map)
