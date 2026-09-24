@@ -66,6 +66,25 @@ def douglas_peucker(points, tolerance_m):
     return [point for point, kept in zip(points, keep) if kept]
 
 
+def simplify_route(route, tolerance_m):
+    """抽稀路線表格的列（[lat, lon, note]），回傳新的列，不改動輸入。
+
+    有備註的點一律保留：備註是使用者自己標的（起訖點、KML 匯入的地名），
+    就算落在直線上也有意義。做法是在這些點把路線切段，各段分別跑
+    douglas_peucker() 再接起來，每段的端點本來就會保留，備註點自然不會被抽掉。
+    """
+    if tolerance_m <= 0 or len(route) <= 2:
+        return [list(row) for row in route]
+
+    last = len(route) - 1
+    anchors = [0] + [i for i in range(1, last) if str(route[i][2]).strip()] + [last]
+    simplified = [list(route[0])]
+    for start, end in zip(anchors, anchors[1:]):
+        segment = douglas_peucker(route[start:end + 1], tolerance_m)
+        simplified.extend(list(row) for row in segment[1:])
+    return simplified
+
+
 def cumulative_distances(points):
     """回傳與 points 等長的累積距離（公尺），[0] 固定為 0。
 

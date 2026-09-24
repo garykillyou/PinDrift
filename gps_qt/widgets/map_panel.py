@@ -78,6 +78,7 @@ class MapPanel(QFrame):
     favorite_activated = Signal(int)
     location_searched = Signal(float, float, str)
     route_computed = Signal(list)  # 路徑規劃算出的完整路線 [[lat, lon, note], ...]
+    simplify_requested = Signal(float)  # 手動簡化目前路線，參數是容差（公尺）
     log = Signal(str)
 
     def __init__(self, map_settings, theme_name, parent=None):
@@ -104,6 +105,7 @@ class MapPanel(QFrame):
         self.route_planner = RoutePlanner(self._settings)
         self.route_planner.log.connect(self.log)
         self.route_planner.route_computed.connect(self.route_computed)
+        self.route_planner.simplify_requested.connect(self.simplify_requested)
         self.route_planner.pick_state_changed.connect(self._on_pick_state_changed)
         layout.addWidget(self.route_planner)
 

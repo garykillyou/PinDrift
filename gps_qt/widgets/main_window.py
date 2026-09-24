@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
-from .. import persistence, theme, tunneld, window_geometry
+from .. import geo, persistence, theme, tunneld, window_geometry
 from ..session import GPSSession
 from .favorites_panel import FavoritesPanel
 from .map_panel import MapPanel
@@ -274,6 +274,7 @@ class MainWindow(QMainWindow):
         self.map_panel.favorite_activated.connect(self._on_map_favorite_activated)
         self.map_panel.location_searched.connect(self._on_location_searched)
         self.map_panel.route_computed.connect(self._on_route_computed)
+        self.map_panel.simplify_requested.connect(self._on_simplify_requested)
 
         model = self.route_panel.model
         model.dataChanged.connect(self._push_route_to_map)
@@ -343,6 +344,23 @@ class MainWindow(QMainWindow):
         self.route_panel.set_route([list(point) for point in route])
         self.map_panel.fit_to([[point[0], point[1]] for point in route])
         self.map_panel.clear_trail()
+
+    def _on_simplify_requested(self, tolerance_m):
+        """手動簡化目前路線（有備註的點一律保留，見 geo.simplify_route()）。
+
+        走 set_route() 整條替換，所以跟載入最愛一樣會觸發 modelReset 把已走距離
+        歸零——點被抽掉後路線長度也會略為改變，舊進度不再精確。路形幾乎不變，
+        視野與軌跡都不需要動。點數沒有減少就不替換，免得無謂地歸零進度。
+        """
+        route = self.route_panel.route
+        simplified = geo.simplify_route(route, tolerance_m)
+        if len(simplified) == len(route):
+            self._log(f"路線簡化：{len(route)} 點已無可抽稀的點（容差 {tolerance_m:g} 公尺）")
+            return
+        self.route_panel.set_route(simplified)
+        self._log(
+            f"路線簡化：{len(route)} 點簡化為 {len(simplified)} 點（容差 {tolerance_m:g} 公尺）"
+        )
 
     def _on_location_searched(self, lat, lon, _name):
         # route 模式只是把視野帶過去，不自動加點——搜尋是為了找路，不是為了加節點。

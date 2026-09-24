@@ -46,6 +46,7 @@ class RoutePlanner(QWidget):
     # (是否正在點選, 已點選座標的 JSON)：給地圖畫暫時標記與切換游標
     pick_state_changed = Signal(bool, str)
     route_computed = Signal(list)  # [[lat, lon, note], ...]
+    simplify_requested = Signal(float)  # 手動簡化目前路線，參數是容差（公尺）
     log = Signal(str)
 
     def __init__(self, map_settings, parent=None):
@@ -83,6 +84,13 @@ class RoutePlanner(QWidget):
         )
         self.simplify_combo.currentIndexChanged.connect(self._on_simplify_changed)
         layout.addWidget(self.simplify_combo)
+
+        # 下拉選單只影響「下一次規劃完」的結果；這顆按鈕用同一個容差，
+        # 對目前表格裡的路線（手動點的、載入的最愛、KML 匯入的）再簡化一次。
+        self.simplify_btn = QPushButton("簡化目前路線")
+        theme.mark_class(self.simplify_btn, "no-uppercase")
+        self.simplify_btn.clicked.connect(self._on_simplify_clicked)
+        layout.addWidget(self.simplify_btn)
 
         layout.addStretch(1)
         self._sync_button()
@@ -139,6 +147,11 @@ class RoutePlanner(QWidget):
         self.plan_btn.setEnabled(self._state != ROUTING)
         self.finish_btn.setVisible(self._state == PICKING)
         self.finish_btn.setEnabled(len(self._points) >= MIN_WAYPOINTS)
+        # 查詢中不能簡化：結果回來會整條取代路線，簡化了也白做；
+        # 容差為 0（簡化：關閉）時按下去不會有任何效果，直接停用。
+        self.simplify_btn.setEnabled(
+            self._state != ROUTING and self.simplify_combo.currentData() > 0
+        )
         picked = [[lat, lon] for lat, lon in self._points]
         self.pick_state_changed.emit(self._state == PICKING, bounds_payload(picked))
 
@@ -173,6 +186,13 @@ class RoutePlanner(QWidget):
 
     def _on_simplify_changed(self, _index):
         self._settings["simplify_m"] = self.simplify_combo.currentData()
+        self._sync_button()
+
+    def _on_simplify_clicked(self):
+        tolerance = self.simplify_combo.currentData()
+        if self._state == ROUTING or tolerance <= 0:
+            return
+        self.simplify_requested.emit(tolerance)
 
 
 def _build_combo(presets, saved_value, default_value):

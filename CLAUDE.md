@@ -80,6 +80,7 @@ PinDrift/
     ├── tunneld.py           # tunneld 偵測 + 提權啟動；也是 tunneld 子行程的本體
     ├── theme.py             # qt-material 主題套用、字級覆寫、danger/success 語意色
     ├── geo.py               # haversine()、interpolate_points()、douglas_peucker()、
+    │                        # simplify_route()（保留備註點的抽稀）、
     │                        # cumulative_distances()／index_at_distance()（進度換算）
     ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
@@ -127,7 +128,7 @@ PinDrift/
   `geo.index_at_distance()`（二分搜尋取最接近者）把 `travelled_m` 換算成這份內插結果裡的索引；中斷
   （停止／斷線）時會停在原地，之後從該處繼續。整條路線被換掉時則由 `GPSSession.reset_progress()` 歸零
   ——舊的已走距離對新路線沒有意義。觸發點是 `RouteTableModel` 的 `modelReset`，它只在 `set_route()`／
-  `clear()` 發出，剛好對應「載入最愛」「路徑規劃算完」「清空座標點」三個整條替換的入口，不會被單點
+  `clear()` 發出，剛好對應「載入最愛」「路徑規劃算完」「簡化目前路線」「清空座標點」四個整條替換的入口，不會被單點
   編輯誤觸。新增任何會整批換掉路線的入口時，要確認它有走到 `set_route()`／`clear()`。
   循環模式不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()` 與
   `loop_style_provider()`，因此使用者中途勾選／切換走法會在下一次抵達端點時生效。循環有兩種走法
@@ -216,6 +217,19 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   座標表格會難以手動微調，所以用 `geo.douglas_peucker()` 抽稀，預設容差 5 公尺（實測降到 22 點，
   路形肉眼看不出差別）。`douglas_peucker()` **刻意用顯式堆疊而非遞迴**：遞迴版深度最壞等於點數，
   上千點會撞到 Python 的遞迴上限。
+- **「簡化目前路線」按鈕**（`RoutePlanner.simplify_btn`）用同一個下拉選單的容差，對表格裡**現有**
+  的路線再抽稀一次——下拉選單本身只影響「下一次規劃完」的結果，手動點的、載入的最愛、KML 匯入的
+  路線原本沒有機會簡化。訊號鏈是 `RoutePlanner.simplify_requested(tolerance)` → `MapPanel` 同名
+  signal 轉發 → `MainWindow._on_simplify_requested()`，形狀與 `route_computed` 相同（`RoutePlanner`
+  不持有路線，只送出意圖）。
+  - 抽稀走 `geo.simplify_route()` 而不是直接呼叫 `douglas_peucker()`：**有備註的點一律保留**
+    （起訖點、KML 匯入的地名是使用者標的，落在直線上也有意義），做法是在備註點把路線切段、各段分別
+    抽稀再接起來。回傳的是新的列，不改動輸入。
+  - 結果走 `route_panel.set_route()` 整條替換，因此會觸發 `modelReset` 把 `travelled_m` 歸零（點被
+    抽掉後路線長度會略變，舊進度不再精確）；**點數沒有減少就不替換**，免得無謂地歸零進度。路形幾乎
+    不變，所以不像 `_on_route_computed()` 那樣 `fit_to()` 或清軌跡。
+  - 容差為 0（簡化：關閉）或 ROUTING 狀態時按鈕停用，由 `_sync_button()` 統一判斷（切換下拉選單時
+    也會重跑一次）；移動中整個 `RoutePlanner` 已被編輯鎖 `setEnabled(False)`，走到一半不會被換路線。
 - **點選狀態機在 `RoutePlanner`**（IDLE → PICKING → ROUTING），刻意不放在
   `MapPanel` 裡：後者的職責是「顯示地圖並轉發互動」，混進來會讓它膨脹到不好讀。`MapPanel._on_map_clicked()`
   一律先問過 `route_planner.handle_map_click()`，**被吃掉就不能再當成新增座標點**——新增任何

@@ -10,6 +10,7 @@ from gps_qt.geo import (
     haversine,
     index_at_distance,
     interpolate_points,
+    simplify_route,
 )
 
 EARTH_RADIUS_M = 6371000
@@ -153,3 +154,49 @@ def test_progress_survives_a_speed_change_midway():
     assert resumed_at < len(fast) - 1
     assert fast_totals[resumed_at] == pytest.approx(travelled, abs=20.0)
     assert fast[resumed_at][0] == pytest.approx(slow[stopped_at][0], abs=0.0002)
+
+
+def test_simplify_route_drops_collinear_rows_and_keeps_endpoint_notes():
+    # Arrange：路線表格的列是 [lat, lon, note]，中間點都在直線上
+    route = [[24.0 + i * 0.001, 120.0, ""] for i in range(11)]
+    route[0][2], route[-1][2] = "起點", "終點"
+
+    # Act
+    simplified = simplify_route(route, 5.0)
+
+    # Assert
+    assert simplified == [[24.0, 120.0, "起點"], [24.01, 120.0, "終點"]]
+
+
+def test_simplify_route_keeps_rows_with_notes_even_on_a_straight_line():
+    # Arrange：第 5 點落在直線上，但有使用者備註，不能被抽掉
+    route = [[24.0 + i * 0.001, 120.0, ""] for i in range(11)]
+    route[5][2] = "便利商店"
+
+    # Act
+    simplified = simplify_route(route, 5.0)
+
+    # Assert
+    assert [row[2] for row in simplified] == ["", "便利商店", ""]
+    assert simplified[1][:2] == route[5][:2]
+
+
+def test_simplify_route_returns_copies_without_mutating_input():
+    # Arrange
+    route = [[24.0, 120.0, "起點"], [24.001, 120.0, ""], [24.002, 120.0, "終點"]]
+    original = [list(row) for row in route]
+
+    # Act
+    simplified = simplify_route(route, 5.0)
+    simplified[0][2] = "改過"
+
+    # Assert
+    assert route == original
+
+
+def test_simplify_route_returns_input_when_disabled():
+    # Arrange
+    route = [[24.0 + i * 0.001, 120.0, ""] for i in range(5)]
+
+    # Act / Assert：容差 0 代表關閉簡化
+    assert simplify_route(route, 0) == route
