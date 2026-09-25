@@ -41,6 +41,8 @@ pip install -r requirements-dev.txt
 python -m pytest
 
 # 打包成可直接交付的資料夾（產出 dist/PinDrift/，約 510 MB）
+# 需要 libssl-3-x64.dll／libcrypto-3-x64.dll：有 Git for Windows 會自動找到，
+# 否則設 PINDRIFT_OPENSSL_DIR 指向 DLL 所在資料夾（見下方打包章節）
 pip install -r requirements-build.txt
 python -m PyInstaller --noconfirm --clean PinDrift.spec
 ```
@@ -64,7 +66,7 @@ tunneld 的主控台輸出），已凍結時跑同一個資料夾裡的 `PinDrif
 PinDrift/
 ├── run.bat                # 啟動捷徑：用 pythonw 開 App（tunneld 交給 tunneld.py）
 ├── build.bat              # 打包捷徑：裝相依 + 跑 PyInstaller
-├── PinDrift.spec          # PyInstaller 設定（onedir，兩個執行檔共用 _internal）
+├── PinDrift.spec          # PyInstaller 設定（onedir，兩個執行檔共用 _internal；另帶 Qt 用的 OpenSSL DLL）
 ├── app_entry.py           # 打包用的主程式進入點（PyInstaller 只吃腳本不吃模組）
 ├── tunneld_entry.py       # 打包用的 tunneld 進入點（console 模式的第二個執行檔）
 ├── requirements.txt       # 執行 App 需要的相依套件
@@ -454,6 +456,20 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 - **`qt_material` 也要 `collect_all()`**：主題色票是套件目錄裡的 `.xml` 與 `.css.template`，
   是資料檔而不是 `.py`，靜態分析不會帶走，少了它 `theme.apply()` 會找不到 `dark_red.xml`。
   凡是「相依套件把資源放在自己的套件目錄裡」都是同一類問題，新增相依時要先想一下這件事。
+- **Qt 的 OpenSSL DLL 要自己打包**（修過的 bug）：Qt 的 OpenSSL backend 在 Windows 只認
+  `libssl-3-x64.dll`／`libcrypto-3-x64.dll`，PySide6 不附，`_internal` 裡 Python 的 `libssl-3.dll`
+  檔名不同也不會被用到。找不到時 Qt 默默退回 SChannel，在部分電腦上連 Valhalla 會出現
+  `SSL handshake failed: ... Unexpected or badly-formatted message received`。開發機通常因為
+  Git for Windows 的 `mingw64\bin` 剛好有這組 DLL 而走 OpenSSL，所以只有別台電腦會壞。
+  spec 的 `_find_openssl_dll()` 依序找 `PINDRIFT_OPENSSL_DIR` → PATH → `git.exe` 旁邊的
+  `mingw64\bin`，都找不到就中止打包。地圖圖磚不受影響（QtWebEngine 用 Chromium 自己的 TLS）。
+  - Git for Windows 預設只把 `Git\cmd` 放進 PATH（`mingw64\bin` 不在），而在 Git Bash 裡
+    `shutil.which("git")` 找到的卻是 `mingw64\bin\git.exe` 本身，所以退路要**兩種位置都檢查**，
+    只往上推一層或兩層都會在其中一個環境漏掉（實測踩過）。
+  - **在開發機上驗證不能只看「能連線」**：開發機的 PATH 上有 Git 的 DLL，就算沒打包也會成功。
+    要把 PATH 縮到只剩 `C:\Windows\System32` 與 `dist\PinDrift\_internal`，確認
+    `QSslSocket.activeBackend()` 是 `openssl`；對照組拿掉 `_internal` 應該變成 `schannel`。
+  - 使用者更新版本時必須連 `_internal` 整包換掉，只換 exe 的話這組 DLL 不會過去。
 - **`upx=False` 不要打開**：UPX 壓縮過的 Qt DLL 常常載入失敗，省下的體積換來隨機的啟動錯誤，
   不划算。`EXE()` 與 `COLLECT()` 兩處都要維持關閉。
 - **`multiprocessing.freeze_support()` 必須是進入點的第一件事**（[app_entry.py](app_entry.py) 與

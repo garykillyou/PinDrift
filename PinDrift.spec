@@ -11,6 +11,7 @@ onefile 每次啟動都解壓到暫存目錄，既慢又常出現子行程找不
 """
 
 import os
+import shutil
 
 from PyInstaller.utils.hooks import collect_all
 
@@ -25,6 +26,51 @@ pmd3_datas, pmd3_binaries, pmd3_hiddenimports = collect_all("pymobiledevice3")
 pytun_datas, pytun_binaries, pytun_hiddenimports = collect_all("pytun_pmd3")
 # qt-material 的主題色票是套件目錄裡的 .xml 與 .css.template，屬於資料檔。
 qtm_datas, qtm_binaries, qtm_hiddenimports = collect_all("qt_material")
+
+# Qt 的 OpenSSL backend 在 Windows 上只認 libssl-3-x64.dll／libcrypto-3-x64.dll 這組檔名，
+# PySide6 本身不附；_internal 裡 Python 的 libssl-3.dll 檔名不同，Qt 不會用它。
+# 找不到時 Qt 會默默退回 Windows 的 SChannel，而 SChannel 在部分電腦上連
+# Valhalla／Nominatim 會握手失敗（"Unexpected or badly-formatted message received"）；
+# 開發機通常剛好因為 PATH 上有 Git for Windows 的那份而走 OpenSSL，所以只有別台電腦會壞。
+# 來源優先用 PINDRIFT_OPENSSL_DIR，沒設才從 PATH 找，再找不到就用 Git for Windows
+# 附的那份；都沒有就讓打包失敗，
+# 不要產出一份會退回 SChannel 的版本。
+OPENSSL_DLLS = ("libssl-3-x64.dll", "libcrypto-3-x64.dll")
+OPENSSL_DIR_ENV = "PINDRIFT_OPENSSL_DIR"
+
+
+def _find_openssl_dll(name):
+    """回傳要打包的 OpenSSL DLL 路徑，找不到就中止打包。"""
+    custom_dir = os.environ.get(OPENSSL_DIR_ENV)
+    if custom_dir:
+        path = os.path.join(custom_dir, name)
+        if not os.path.isfile(path):
+            raise SystemExit(f"{OPENSSL_DIR_ENV}={custom_dir} 裡找不到 {name}")
+        return path
+
+    path = shutil.which(name)
+    git = shutil.which("git")
+    if path is None and git is not None:
+        # Git for Windows 預設只把 <Git>\cmd 加進 PATH，DLL 在旁邊的 mingw64\bin；
+        # 在 Git Bash 裡找到的則是 <Git>\mingw64\bin\git.exe 本身，兩種位置都要看。
+        git_dir = os.path.dirname(git)
+        candidates = (
+            os.path.join(git_dir, name),
+            os.path.join(os.path.dirname(git_dir), "mingw64", "bin", name),
+        )
+        path = next((c for c in candidates if os.path.isfile(c)), None)
+    if path is None:
+        raise SystemExit(
+            f"找不到 {name}：請把 OpenSSL 3 (x64) 的 DLL 所在資料夾設成環境變數 "
+            f"{OPENSSL_DIR_ENV}，或加進 PATH（Git for Windows 的 mingw64\\bin 也有這組檔案）"
+        )
+    return path
+
+
+# 放在 _internal 根目錄：bootloader 會把它設成 DLL 搜尋路徑，Qt 的 LoadLibrary 找得到。
+OPENSSL_BINARIES = [(_find_openssl_dll(name), ".") for name in OPENSSL_DLLS]
+for src, _ in OPENSSL_BINARIES:
+    print(f"[PinDrift] bundling OpenSSL for Qt: {src}")
 
 # 地圖頁面與 vendored 的 Leaflet：非 .py 檔，PyInstaller 不會自己帶。
 # 目的地要與 gps_qt/paths.py 的 resource_path() 對應（_internal/gps_qt/web/...）。
@@ -79,7 +125,7 @@ EXCLUDED_MODULES = [
 app_analysis = Analysis(
     ["app_entry.py"],
     pathex=[],
-    binaries=pmd3_binaries + pytun_binaries + qtm_binaries,
+    binaries=pmd3_binaries + pytun_binaries + qtm_binaries + OPENSSL_BINARIES,
     datas=WEB_DATA + pmd3_datas + pytun_datas + qtm_datas,
     hiddenimports=pmd3_hiddenimports + pytun_hiddenimports + qtm_hiddenimports,
     hookspath=[],
