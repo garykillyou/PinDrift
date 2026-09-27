@@ -112,6 +112,13 @@ def cumulative_distances(points):
     return totals
 
 
+def route_length(route):
+    """路線（[lat, lon, ...] 的列）的總長度（公尺），不到兩點時為 0。"""
+    return sum(
+        haversine(a[0], a[1], b[0], b[1]) for a, b in zip(route, route[1:])
+    )
+
+
 def index_at_distance(cumulative, distance_m):
     """在 cumulative（遞增的累積距離）裡找出最接近 distance_m 的索引。"""
     if not cumulative:

@@ -33,6 +33,10 @@ WIDE_LAYOUT_BREAKPOINT = 1000
 MAP_STRETCH = 3
 COORDS_STRETCH = 2
 
+# 設定變動後最多等這麼久就自動存檔一次。計時器第一次變動時啟動、期間的變動
+# 不會重新計時，連續拖曳節點也只會每隔這段時間寫一次檔，而不是永遠等不到空檔。
+AUTOSAVE_DELAY_MS = 2000
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -76,7 +80,8 @@ class MainWindow(QMainWindow):
         self.session.progress_value.connect(lambda v: self.progress_bar.setValue(int(v * 1000)))
         self.session.progress_label.connect(self.progress_label.setText)
         self.session.paused.connect(self._sync_btn_states)
-        self.session.session_ended.connect(self._on_session_ended)
+        # session_ended 發出前 GPSSession 已自行把 pending_action 歸零，這裡只要同步按鈕。
+        self.session.session_ended.connect(self._sync_btn_states)
         self.session.direction_changed.connect(self._sync_btn_states)
         self.session.position_changed.connect(self.map_panel.set_position)
         self.session.route_finished.connect(self._on_route_finished)
@@ -84,6 +89,7 @@ class MainWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation), self
         )
         self._connect_map()
+        self._setup_autosave()
         self._switch_mode("route")
         self._sync_btn_states()
 
@@ -421,12 +427,6 @@ class MainWindow(QMainWindow):
         self._sync_btn_states()
         self._log("恢復真實定位中...")
 
-    def _on_session_ended(self):
-        # 連線已結束（正常斷線或中途出錯），把動作歸零再同步按鈕狀態，
-        # 否則殘留的 "disconnect" 會讓按鈕全部卡在停用。
-        self.session.pending_action = "pause"
-        self._sync_btn_states()
-
     def _on_route_finished(self, message):
         # 用系統匣提示而非 QMessageBox：跳出對話框會搶走焦點、中斷使用者正在
         # 做的其他事（例如全螢幕遊戲），系統匣提示不會 activate 視窗。
@@ -487,12 +487,49 @@ class MainWindow(QMainWindow):
         if not self.isMaximized():
             self._normal_geometry = window_geometry.capture_geometry(self)
 
-    def closeEvent(self, event):
+    # ── 設定存檔 ────────────────────
+    def _setup_autosave(self):
+        """路線、速度與地圖設定變動後自動存檔。
+
+        只在關閉視窗時存檔的話，程式當掉或被強制結束就會把上次的路線與設定
+        全部弄丟。地圖設定是 MapPanel 就地改 self.map_settings（即
+        self.settings["map"]），所以只需要一個 settings_changed 通知。
+        """
+        self._last_autosave_error = None
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(AUTOSAVE_DELAY_MS)
+        self._autosave_timer.timeout.connect(self._autosave)
+
+        model = self.route_panel.model
+        for signal in (model.dataChanged, model.rowsInserted, model.rowsRemoved, model.modelReset):
+            signal.connect(self._schedule_autosave)
+        self.route_panel.speed_spin.valueChanged.connect(self._schedule_autosave)
+        self.map_panel.settings_changed.connect(self._schedule_autosave)
+
+    def _schedule_autosave(self, *_args):
+        if not self._autosave_timer.isActive():
+            self._autosave_timer.start()
+
+    def _autosave(self):
+        self._collect_settings()
+        error = persistence.save_settings(self.settings)
+        # 放在唯讀位置時每次自動存檔都會失敗，同樣的錯誤只講一次，不洗版執行日誌。
+        if error and error != self._last_autosave_error:
+            self._log("自動儲存設定失敗：" + error)
+        self._last_autosave_error = error
+
+    def _collect_settings(self):
+        """把只存在 widget 上的狀態（視窗幾何、路線、速度）寫回 self.settings。"""
         win = dict(self._normal_geometry)
         win["maximized"] = self.isMaximized()
         self.settings["window"] = win
         self.settings["last_route"] = [[r[0], r[1], r[2]] for r in self.route_panel.route]
         self.settings["speed_kmh"] = self.route_panel.speed_spin.value()
+
+    def closeEvent(self, event):
+        self._autosave_timer.stop()
+        self._collect_settings()
         error = persistence.save_settings(self.settings)
         if error:
             # 視窗都要關了，寫進執行日誌等於沒說；但也不攔下關閉動作。

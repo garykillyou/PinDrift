@@ -10,6 +10,7 @@ from gps_qt.geo import (
     haversine,
     index_at_distance,
     interpolate_points,
+    route_length,
     simplify_route,
 )
 
@@ -261,3 +262,16 @@ def test_simplify_route_returns_input_when_disabled():
 
     # Act / Assert：容差 0 代表關閉簡化
     assert simplify_route(route, 0) == route
+
+
+def test_route_length_sums_segment_distances():
+    # Arrange：[lat, lon, note] 的列，兩段各約 111.19 公尺
+    route = [[25.0, 121.0, "起點"], [25.001, 121.0, ""], [25.002, 121.0, "終點"]]
+
+    # Act / Assert
+    assert route_length(route) == pytest.approx(222.39, abs=0.1)
+
+
+def test_route_length_is_zero_for_fewer_than_two_points():
+    assert route_length([]) == 0.0
+    assert route_length([[25.0, 121.0, ""]]) == 0.0

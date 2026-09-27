@@ -147,7 +147,11 @@ class GPSSession(QObject):
                 self.progress_value.emit(0.0)
                 self.progress_label.emit("已恢復真實定位")
         finally:
+            # 連線已結束（正常斷線、提早 return 或中途出錯），動作一併歸零再通知：
+            # 殘留的 "disconnect"/"forward" 會讓 UI 以為還在忙，按鈕全部卡在停用。
+            # 狀態由這裡自己收尾，不交給收到 signal 的 UI 從外面改。
             self.session_active = False
+            self.pending_action = "pause"
             self.session_ended.emit()
 
     async def _walk_pin(self, sim):

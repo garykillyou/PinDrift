@@ -24,6 +24,7 @@ EXTRA_QSS_TEMPLATE = """
 .app-title {{ font-size: {app_title}pt; font-weight: bold; }}
 .section-title {{ font-size: {section_title}pt; font-weight: bold; }}
 .no-uppercase {{ text-transform: none; }}
+.bold {{ font-weight: bold; }}
 """
 
 

@@ -5,8 +5,8 @@
 步行與開車算出來的路線差很多（行人可走巷弄、階梯、公園，車輛只能走車道），
 對這個工具來說是必要的區分。
 
-與 geocode.py 一樣用 QNetworkAccessManager 而非 urllib：非同步、直接跑在 Qt
-事件迴圈上，等待路徑期間 UI 不會卡住。
+節流、User-Agent 與「只保留最後一次查詢」與 geocode.py 共用
+netclient.SingleFlightClient。
 
 > 這是社群維運的免費服務，使用政策是「合理使用」。個人工具的用量沒有問題，
 > 但不要拿去做批次大量查詢。
@@ -14,12 +14,12 @@
 
 import json
 
-from PySide6.QtCore import QDateTime, QObject, QUrl, Signal
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PySide6.QtCore import QUrl, Signal
+from PySide6.QtNetwork import QNetworkReply, QNetworkRequest
+
+from .netclient import SingleFlightClient
 
 VALHALLA_URL = "https://valhalla1.openstreetmap.de/route"
-USER_AGENT = "PinDrift-GPS-Simulator/1.0 (https://github.com/garykillyou/PinDrift)"
-MIN_REQUEST_INTERVAL_MS = 1000
 
 COSTING_PEDESTRIAN = "pedestrian"
 COSTING_BICYCLE = "bicycle"
@@ -29,7 +29,7 @@ COSTING_AUTO = "auto"
 POLYLINE_PRECISION = 1e6
 
 
-class Router(QObject):
+class Router(SingleFlightClient):
     """把一次路徑查詢包成 route_ready / failed 兩個 signal。
 
     同時間只保留最後一次查詢：使用者連續規劃兩次時，前一個還沒回來的請求直接
@@ -37,26 +37,12 @@ class Router(QObject):
     """
 
     route_ready = Signal(list, float, float)  # [(lat, lon), ...], 距離(公里), 時間(秒)
-    failed = Signal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._manager = QNetworkAccessManager(self)
-        self._reply = None
-        self._last_request_ms = 0
+    THROTTLED_MESSAGE = "路徑規劃請求太頻繁，請稍候再試"
 
     def route(self, waypoints, costing=COSTING_PEDESTRIAN):
         """waypoints 為 [(lat, lon), ...]，依序經過每一點，至少要有 2 個。"""
-        now = QDateTime.currentMSecsSinceEpoch()
-        if now - self._last_request_ms < MIN_REQUEST_INTERVAL_MS:
-            self.failed.emit("路徑規劃請求太頻繁，請稍候再試")
-            return
-        self._last_request_ms = now
-
-        self._abort_pending()
-        request = QNetworkRequest(QUrl(VALHALLA_URL))
+        request = self.new_request(QUrl(VALHALLA_URL))
         request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
-        request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, USER_AGENT)
         body = json.dumps({
             "locations": [
                 {"lat": float(lat), "lon": float(lon)} for lat, lon in waypoints
@@ -64,23 +50,9 @@ class Router(QObject):
             "costing": costing,
             "directions_options": {"units": "kilometers"},
         }).encode("utf-8")
-        self._reply = self._manager.post(request, body)
-        self._reply.finished.connect(self._on_finished)
+        self._send(lambda manager: manager.post(request, body))
 
-    def _abort_pending(self):
-        if self._reply is not None and not self._reply.isFinished():
-            self._reply.abort()
-        self._reply = None
-
-    def _on_finished(self):
-        reply = self.sender()
-        reply.deleteLater()
-        if reply is not self._reply:
-            return  # 已被新的查詢取代，忽略這份過期結果
-        self._reply = None
-
-        if reply.error() == QNetworkReply.NetworkError.OperationCanceledError:
-            return
+    def _handle_reply(self, reply):
         body = bytes(reply.readAll().data())
         if reply.error() != QNetworkReply.NetworkError.NoError:
             self.failed.emit("路徑規劃失敗：" + (_error_message(body) or reply.errorString()))

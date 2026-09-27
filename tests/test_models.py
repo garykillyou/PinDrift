@@ -41,3 +41,16 @@ def test_set_data_still_accepts_any_note(model):
     # Act / Assert
     assert model.setData(model.index(1, COL_NOTE), "便利商店") is True
     assert model.route[1][2] == "便利商店"
+
+
+def test_set_route_notifies_on_changed_like_other_edits():
+    # Arrange：整條替換也要通知，路線資訊（總距離、預計時間）才會跟著更新
+    calls = []
+    model = RouteTableModel([[24.0, 120.0, ""], [24.1, 120.1, ""]], on_changed=lambda: calls.append(1))
+
+    # Act
+    model.set_route([[25.0, 121.0, ""], [25.1, 121.1, ""], [25.2, 121.2, ""]])
+
+    # Assert
+    assert calls == [1]
+    assert model.rowCount() == 3

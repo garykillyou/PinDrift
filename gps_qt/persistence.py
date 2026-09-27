@@ -7,12 +7,15 @@ import time
 import xml.etree.ElementTree as ET
 
 from . import paths
-from .geo import is_valid_latitude, is_valid_longitude
+from .geo import haversine, is_valid_latitude, is_valid_longitude
 
 # 存放位置由 paths.data_file() 決定：一律放在執行檔（未凍結時是專案根目錄）
 # 所在的資料夾，整包搬走設定就跟著走。
 FAVORITES_FILE = paths.data_file("pindrift_favorites.json")
 SETTINGS_FILE = paths.data_file("pindrift_settings.json")
+
+# KML 匯入時，起訖點附近多少公尺內的地標名稱會被拿來當備註。
+KML_MARKER_MATCH_M = 50.0
 
 
 def load_favorites():
@@ -284,11 +287,13 @@ def parse_kml_route(path):
         return None, doc_name
 
     def nearest_marker_name(lat, lon):
-        best_name, best_d = None, 0.0005  # 約 50 公尺內才採用
+        # 用實際距離而不是經緯度的「度」比較：經度 1 度的長度隨緯度縮短
+        # （緯度 60 度時只剩一半），直接拿度數當距離會讓門檻隨地點忽大忽小。
+        best_name, best_d = None, KML_MARKER_MATCH_M
         for mlat, mlon, mname in marker_points:
             if not mname:
                 continue
-            d = ((lat - mlat) ** 2 + (lon - mlon) ** 2) ** 0.5
+            d = haversine(lat, lon, mlat, mlon)
             if d < best_d:
                 best_d, best_name = d, mname
         return best_name

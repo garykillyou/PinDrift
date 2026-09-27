@@ -88,8 +88,7 @@ class RouteTableModel(QAbstractTableModel):
         except (TypeError, ValueError):
             return False
         self.dataChanged.emit(index, index)
-        if self._on_changed:
-            self._on_changed()
+        self._notify_changed()
         return True
 
     def set_coordinates(self, row, lat, lon):
@@ -103,21 +102,20 @@ class RouteTableModel(QAbstractTableModel):
         self._route[row][0] = lat
         self._route[row][1] = lon
         self.dataChanged.emit(self.index(row, COL_LAT), self.index(row, COL_LON))
-        if self._on_changed:
-            self._on_changed()
+        self._notify_changed()
 
     def set_route(self, route):
         self.beginResetModel()
         self._route = route
         self.endResetModel()
+        self._notify_changed()
 
     def insert_point(self, point):
         row = len(self._route)
         self.beginInsertRows(QModelIndex(), row, row)
         self._route.append(point)
         self.endInsertRows()
-        if self._on_changed:
-            self._on_changed()
+        self._notify_changed()
 
     def remove_point(self, row):
         if not (0 <= row < len(self._route)):
@@ -128,13 +126,16 @@ class RouteTableModel(QAbstractTableModel):
         # 後面所有列的「#」欄位顯示需要重新整理
         if row < len(self._route):
             self.dataChanged.emit(self.index(row, COL_INDEX), self.index(len(self._route) - 1, COL_INDEX))
-        if self._on_changed:
-            self._on_changed()
+        self._notify_changed()
 
     def clear(self):
         self.beginResetModel()
         self._route.clear()
         self.endResetModel()
+        self._notify_changed()
+
+    def _notify_changed(self):
+        # 每一種變動（含 set_route() 整條替換）都要通知，路線資訊才會跟著重算。
         if self._on_changed:
             self._on_changed()
 

@@ -116,8 +116,7 @@ class FavoritesPanel(QFrame):
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(4, 2, 4, 2)
-        name_label = _ElidingLabel(fav["name"])
-        name_label.setStyleSheet("font-weight: bold;")
+        name_label = theme.mark_class(_ElidingLabel(fav["name"]), "bold")
         row_layout.addWidget(name_label, 1)
         preview = f"{fav['lat']:.4f}, {fav['lon']:.4f}" if fav["type"] == "pin" else f"{len(fav['route'])} 個節點"
         preview_label = _fix_to_hint(QLabel(preview), extra=4)

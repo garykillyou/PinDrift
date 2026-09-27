@@ -79,6 +79,9 @@ class MapPanel(QFrame):
     location_searched = Signal(float, float, str)
     route_computed = Signal(list)  # 路徑規劃算出的完整路線 [[lat, lon, note], ...]
     simplify_requested = Signal(float)  # 手動簡化目前路線，參數是容差（公尺）
+    # 使用者改了要記住的地圖設定（圖磚、跟隨、路徑規劃選項），讓 MainWindow 排程自動存檔。
+    # 平移／縮放視野刻意不算：跟隨模式下每秒都在變，存檔只留給關閉視窗時。
+    settings_changed = Signal()
     log = Signal(str)
 
     def __init__(self, map_settings, theme_name, parent=None):
@@ -106,6 +109,7 @@ class MapPanel(QFrame):
         self.route_planner.log.connect(self.log)
         self.route_planner.route_computed.connect(self.route_computed)
         self.route_planner.simplify_requested.connect(self.simplify_requested)
+        self.route_planner.settings_changed.connect(self.settings_changed)
         self.route_planner.pick_state_changed.connect(self._on_pick_state_changed)
         layout.addWidget(self.route_planner)
 
@@ -339,6 +343,7 @@ class MapPanel(QFrame):
             return
         self._settings["tile_source"] = key
         self._push_tile()
+        self.settings_changed.emit()
 
     def _ask_custom_tile_url(self):
         url, ok = QInputDialog.getText(
@@ -361,6 +366,7 @@ class MapPanel(QFrame):
     def _on_follow_toggled(self, checked):
         self._settings["follow"] = checked
         self._push_follow()
+        self.settings_changed.emit()
 
     def _on_follow_disengaged(self):
         # 使用者在地圖上手動拖動而自動關閉跟隨，把核取方塊同步過來；
@@ -369,6 +375,7 @@ class MapPanel(QFrame):
         self.follow_check.setChecked(False)
         self.follow_check.blockSignals(False)
         self._settings["follow"] = False
+        self.settings_changed.emit()
 
     def _on_view_changed(self, lat, lon, zoom):
         self._settings["center"] = [lat, lon]

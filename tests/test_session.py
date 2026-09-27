@@ -243,3 +243,24 @@ def test_reverse_walk_returns_to_the_start():
     assert sim.positions[-1] == pytest.approx(START)
     assert all(b[0] <= a[0] for a, b in zip(sim.positions, sim.positions[1:]))
     assert harness.finished[-1] == "已返回起點，保持於目前座標"
+
+
+def test_session_end_resets_pending_action_even_on_early_return(monkeypatch):
+    """找不到裝置這類提早 return 也要把 pending_action 歸零，UI 按鈕才不會卡在停用。"""
+    import pymobiledevice3.tunneld.api as tunneld_api
+
+    async def no_devices():
+        return []
+    monkeypatch.setattr(tunneld_api, "get_tunneld_devices", no_devices)
+    harness = Harness()
+    ended = []
+    harness.session.session_ended.connect(
+        lambda: ended.append((harness.session.pending_action, harness.session.session_active))
+    )
+    harness.session.pending_action = "forward"
+
+    # Act
+    asyncio.run(harness.session._session_main())
+
+    # Assert：session_ended 發出的當下狀態就已經歸零
+    assert ended == [("pause", False)]

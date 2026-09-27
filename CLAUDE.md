@@ -17,8 +17,15 @@ PinDrift 是一個 Python 桌面工具，透過 `pymobiledevice3` 模擬 iPhone�
 **只攔 `OSError` 並回傳錯誤訊息字串（成功回傳 `None`）**，不丟例外——放在唯讀位置時
 存檔失敗不能讓 `closeEvent()` 整個炸掉；序列化失敗則照常拋 `TypeError`，那是程式的 bug。
 寫入是**先序列化、寫到 `.tmp` 再 `os.replace()`**，序列化失敗或寫到一半當機都不會留下被清空的原檔。
-三個呼叫端各自決定提示方式：切換主題走執行日誌、存最愛與關閉視窗走 `QMessageBox`
-（視窗都要關了，寫進日誌等於沒說）。新增存檔入口時要記得接這個回傳值。
+各呼叫端自己決定提示方式：切換主題與自動存檔走執行日誌（自動存檔同樣的錯誤只記一次，放在唯讀
+位置時才不會每兩秒洗版一次）、存最愛與關閉視窗走 `QMessageBox`（視窗都要關了，寫進日誌等於沒說）。
+新增存檔入口時要記得接這個回傳值。
+設定除了關閉視窗時存，**路線、速度、地圖設定變動後也會自動存檔**（`MainWindow._setup_autosave()`），
+程式當掉或被強制結束才不會把上次的路線弄丟。計時器是 `AUTOSAVE_DELAY_MS`(2000) 的 single-shot，
+**第一次變動時啟動、期間的變動不重新計時**——若改成每次都重新計時，連續拖曳時會一直等不到空檔。
+地圖設定是 `MapPanel`／`RoutePlanner` 就地改 `settings["map"]`，改完 emit `settings_changed`；
+平移／縮放視野刻意不觸發（跟隨模式下每秒都在變），只在關閉視窗時存。視窗幾何、路線、速度這些只存在
+widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `closeEvent()` 共用。
 讀取端 `load_settings()`／`load_favorites()` 回傳 **`(資料, 訊息)`**：檔案無法解析、最外層型別不對，
 或最愛裡有被 `normalize_favorite()` 略過的項目時，會先把原檔複製成
 `<檔名>.corrupt-<時間戳>.json` 再回報（`MainWindow` 建好版面後寫進執行日誌）。**絕對不能改回
@@ -43,7 +50,7 @@ python -m pymobiledevice3 remote tunneld
 
 # 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定正規化、
 # 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
-# GPSSession._walk_route() 的續走／改速度／循環走法／時間間隔）
+# GPSSession._walk_route() 的續走／改速度／循環走法／時間間隔、KML 匯入、網路請求的節流與過期過濾）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -93,12 +100,14 @@ PinDrift/
     ├── theme.py             # qt-material 主題套用、字級覆寫、danger/success 語意色
     ├── geo.py               # haversine()、interpolate_points()、douglas_peucker()、
     │                        # simplify_route()（保留備註點的抽稀）、
-    │                        # cumulative_distances()／index_at_distance()（進度換算）
+    │                        # cumulative_distances()／index_at_distance()（進度換算）、
+    │                        # route_length()、is_valid_latitude()／is_valid_longitude()
     ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
     ├── models.py            # RouteTableModel + DeleteButtonDelegate（路線表格虛擬化）
     ├── map_bridge.py        # QWebChannel 契約（MapBridge）+ payload 序列化純函式
+    ├── netclient.py         # SingleFlightClient：節流 + 只保留最後一次請求（geocode/routing 共用）
     ├── geocode.py           # Nominatim 地名搜尋（Python 端發送，符合使用政策）
     ├── routing.py           # Valhalla 路徑規劃 + polyline6 解碼
     ├── web/                 # 地圖頁面（QWebEngineView 以 file:// 載入）
@@ -220,8 +229,11 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
 - **地名搜尋刻意由 Python 端發送**（[geocode.py](gps_qt/geocode.py) 用 `QNetworkAccessManager`）：
   Nominatim 政策要求可識別的 User-Agent 且每秒最多 1 次，在 QWebEngine 裡 `fetch()` 帶的是瀏覽器
   UA，改不掉也不合規。route 模式搜尋只帶視野過去，**不自動加點**；結果超過一筆會跳 `QMenu` 讓使用者挑。
-  `Geocoder` 與 `Router`（路徑規劃）用的是同一個形狀：`MIN_REQUEST_INTERVAL_MS`(1000) 擋住過快的
-  請求，`_abort_pending()` 讓同時間只保留最後一次查詢，避免舊結果比新結果晚到而覆蓋掉畫面。
+  `Geocoder` 與 `Router`（路徑規劃）都繼承 [netclient.py](gps_qt/netclient.py) 的 `SingleFlightClient`：
+  `MIN_REQUEST_INTERVAL_MS`(1000) 擋住過快的請求，`_abort_pending()` 讓同時間只保留最後一次查詢，
+  `_on_finished()` 濾掉過期與被取消的回應，避免舊結果比新結果晚到而覆蓋掉畫面；`USER_AGENT` 也只定義
+  在這裡。子類別只負責組請求（`new_request()` 已帶好 User-Agent，再交給 `_send()`）、實作
+  `_handle_reply()`，並用 `THROTTLED_MESSAGE` 覆寫節流時的提示文字。
 - **Leaflet 本地化**在 `web/vendor/`：純靠 CDN 時斷網會整頁白，本地化後控制項仍在，
   只有圖磚空白並由 `tileerror` 顯示提示橫幅。
   `.gitattributes` 把 `gps_qt/web/vendor/**` 標為 `-text`，**vendored 檔案一律不做行尾轉換**：
@@ -299,8 +311,9 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   `disconnect`（移動中或斷線中）才停用，避免中途切換造成方向跟目前實際走的方向不一致，要先
   按「停止」才能再切。按鈕文字顯示「按下去會變成哪個方向」：`session.direction` 目前是
   `"reverse"` 就顯示「往終點」，否則顯示「往起點」。
-- 連線結束（正常斷線或出錯）時 `_on_session_ended()` 會先把 `pending_action` 歸零成 `"pause"` 再同步
-  按鈕，否則殘留的 `"disconnect"` 會讓按鈕全部卡在停用。
+- 連線結束（正常斷線、提早 return 或出錯）時，`_session_main()` 的 `finally` 會先把 `pending_action`
+  歸零成 `"pause"` 再 emit `session_ended`，`MainWindow` 收到後只負責 `_sync_btn_states()`；否則殘留的
+  `"disconnect"` 會讓按鈕全部卡在停用。狀態由 `GPSSession` 自己收尾，不讓 UI 從外面改。
 - **抵達端點的提示走系統匣、不用 `QMessageBox`**：沒開循環模式時 `_walk_route()` emit
   `route_finished(message)`，`MainWindow._on_route_finished()` 用 `QSystemTrayIcon.showMessage()` 顯示。
   對話框會搶焦點、打斷使用者正在做的事（例如全螢幕遊戲），系統匣提示不會 activate 視窗。
@@ -363,7 +376,8 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   不要自己 `setMinimumWidth()` 寫死像素。與 `_fix_to_hint()` 同樣必須在 `theme.apply()` 之後呼叫。
 - 同一套機制還有一個 `.no-uppercase { text-transform: none; }`：qt-material 預設會把按鈕文字轉成大寫，
   速度預設按鈕（「步行 5 km/h」）這種含單位的文字被轉大寫後會變成「5 KM/H」，所以用
-  `mark_class(btn, "no-uppercase")` 擋掉。
+  `mark_class(btn, "no-uppercase")` 擋掉。粗體同理用 `.bold`（最愛清單的名稱欄），不要對個別
+  widget 呼叫 `setStyleSheet()`。
 - 全域字體是 `Noto Sans TC`（比例字體，非等寬；使用者測試過多個等寬字體選項後決定用這個純粹當一般
   UI 字體）。要換字體只改 `apply()` 裡 `extra["font_family"]` 一處。
 - 路線/固定定位模式切換按鈕是 `setCheckable(True)` + `QButtonGroup(exclusive=True)`，靠 qt-material
@@ -374,7 +388,8 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 內，回傳 `None` 就代表無效、位置交給 Windows 決定。Qt6 預設開啟 High-DPI scaling，`QWidget.geometry()`
 拿到的座標本身就是邏輯像素，不需要手動做實體/邏輯像素換算。`MainWindow` 只在 `not self.isMaximized()`
 時才更新 `_normal_geometry`（`resizeEvent`/`moveEvent` 都會呼叫），因為最大化時的幾何不能當還原基準；
-`closeEvent()` 用這份記錄的座標存檔，同時把 `last_route` 與 `speed_kmh` 一起寫回 `pindrift_settings.json`。
+`_collect_settings()` 用這份記錄的座標，連同 `last_route` 與 `speed_kmh` 一起寫回 `pindrift_settings.json`
+（關閉視窗與自動存檔都走這裡）。
 
 ### 路線表格：QTableView 虛擬化
 [models.py](gps_qt/models.py) 的 `RouteTableModel(QAbstractTableModel)` + `RoutePanel`（[route_panel.py](gps_qt/widgets/route_panel.py)）
@@ -393,8 +408,10 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   刪除入口時也要接到這裡，不要各自呼叫 `model.remove_point()`。
 - 標題列除了「新增點」還有「清空座標點」（`model.clear()`）：清空後路線只剩 0 個點，要重新在地圖上
   點或載入最愛才能再開始移動。
-- `_update_info()` 由 `RouteTableModel` 的 `on_changed` callback 觸發，每次表格變動就重算總距離、依目前
-  速度估算的預計時間與節點數，顯示在「路線座標點」標題右邊。
+- `_update_info()` 由 `RouteTableModel` 的 `on_changed` callback 觸發，每次表格變動就重算總距離
+  （`geo.route_length()`）、依目前速度估算的預計時間與節點數，顯示在「路線座標點」標題右邊。
+  模型的每一種變動（含 `set_route()` 整條替換與 `clear()`）都經過 `_notify_changed()`，呼叫端不必自己
+  再補一次 `_update_info()`。外部一律透過 `model.route`／`RoutePanel.route` 取路線，不要碰 `_route`。
 
 ### 最愛清單：QListWidget + 自訂 eliding label
 [favorites_panel.py](gps_qt/widgets/favorites_panel.py) 的 `FavoritesPanel` 項目數通常不多，不像路線表格要處理數千筆，
@@ -423,8 +440,9 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   使用者點地圖上的圓點時才能對回同一筆資料走既有的 `_load_favorite()` 流程（清單本身是過濾過的，
   用過濾後的序號會對錯）。
 - 路線最愛除了手動輸入座標外，也可從 KML 檔案匯入（`_import_kml` → `persistence.parse_kml_route()`）：
-  解析第一條 `LineString` 作為路線座標，並用起訖點附近（約 50 公尺內）的 `Point` 名稱自動當作起訖點
-  備註，其餘中間點備註留空。
+  解析第一條 `LineString` 作為路線座標，並用起訖點附近（`KML_MARKER_MATCH_M`，50 公尺內）的 `Point`
+  名稱自動當作起訖點備註，其餘中間點備註留空。距離用 `haversine()` 算（修過的 bug）：舊版直接拿經緯度
+  的「度」比較，經度 1 度的長度隨緯度縮短，門檻會隨地點忽大忽小。
 
 ### 固定座標欄位：貼上「緯度, 經度」的攔截機制
 [pin_panel.py](gps_qt/widgets/pin_panel.py) 的 `_CoordinatePasteLineEdit(QLineEdit)` 讓使用者把地圖複製來的

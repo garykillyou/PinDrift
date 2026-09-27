@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
-from ..geo import haversine
+from ..geo import route_length
 from ..models import COL_DELETE, COL_INDEX, COL_LAT, COL_LON, COL_NOTE, DeleteButtonDelegate, RouteTableModel
 
 SPEED_PRESETS = [("步行 5 km/h", 5), ("慢跑 10 km/h", 10), ("騎車 20 km/h", 20), ("開車 40 km/h", 40)]
@@ -98,7 +98,7 @@ class RoutePanel(QFrame):
 
     @property
     def route(self):
-        return self.model._route
+        return self.model.route
 
     def speed_ms(self):
         return self.speed_spin.value() * 1000 / 3600
@@ -110,11 +110,11 @@ class RoutePanel(QFrame):
         return LOOP_STYLE_LABELS[self.loop_style_combo.currentIndex()][1]
 
     def set_route(self, route):
+        # model.set_route() 會經由 on_changed 觸發 _update_info()，不必自己再算一次。
         self.model.set_route(route)
-        self._update_info()
 
     def _add_point(self):
-        route = self.model._route
+        route = self.model.route
         last = route[-1] if route else [24.0, 121.0, "新增點"]
         self.model.insert_point([last[0] + 0.001, last[1] + 0.001, "新增點"])
 
@@ -131,23 +131,20 @@ class RoutePanel(QFrame):
 
         表格的刪除欄與地圖節點的彈出視窗都走這裡，兩邊共用同一道下限檢查。
         """
-        if len(self.model._route) <= 2:
+        if len(self.model.route) <= 2:
             return
         self.model.remove_point(row)
 
     def _clear_points(self):
+        # 清空後不到兩點，on_changed 觸發的 _update_info() 會一併清掉路線資訊。
         self.model.clear()
-        self.info_label.setText("")
 
     def _update_info(self):
-        route = self.model._route
+        route = self.model.route
         if len(route) < 2:
             self.info_label.setText("")
             return
-        dist = sum(
-            haversine(route[i][0], route[i][1], route[i + 1][0], route[i + 1][1])
-            for i in range(len(route) - 1)
-        )
+        dist = route_length(route)
         speed = self.speed_ms()
         secs = dist / speed if speed > 0 else 0
         mins, sec2 = int(secs // 60), int(secs % 60)

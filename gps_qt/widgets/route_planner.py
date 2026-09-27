@@ -47,6 +47,7 @@ class RoutePlanner(QWidget):
     pick_state_changed = Signal(bool, str)
     route_computed = Signal(list)  # [[lat, lon, note], ...]
     simplify_requested = Signal(float)  # 手動簡化目前路線，參數是容差（公尺）
+    settings_changed = Signal()  # 使用者改了移動方式／簡化容差（就地寫進 map_settings）
     log = Signal(str)
 
     def __init__(self, map_settings, parent=None):
@@ -183,9 +184,11 @@ class RoutePlanner(QWidget):
     # ── 下拉選單 ────────────────────
     def _on_costing_changed(self, _index):
         self._settings["routing_costing"] = self.costing_combo.currentData()
+        self.settings_changed.emit()
 
     def _on_simplify_changed(self, _index):
         self._settings["simplify_m"] = self.simplify_combo.currentData()
+        self.settings_changed.emit()
         self._sync_button()
 
     def _on_simplify_clicked(self):
