@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
 
         self.pin_panel = PinPanel()
         right_layout.addWidget(self.pin_panel, COORDS_STRETCH)
-        speed_kmh = self.settings.get("speed_kmh", DEFAULT_SPEED_KMH)
+        speed_kmh = persistence.load_speed_kmh(self.settings, DEFAULT_SPEED_KMH)
         self.route_panel = RoutePanel(route, initial_speed=speed_kmh)
         right_layout.addWidget(self.route_panel, COORDS_STRETCH)
 

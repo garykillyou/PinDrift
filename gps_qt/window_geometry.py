@@ -6,6 +6,8 @@ QScreen.availableGeometry() 都是邏輯像素，也不需要手動做實體/邏
 像素換算。
 """
 
+import math
+
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QGuiApplication
 
@@ -24,22 +26,46 @@ def point_on_any_screen(x, y):
     return QGuiApplication.screenAt(QPoint(int(x), int(y))) is not None
 
 
+def _as_int(value, default):
+    """有限的數值轉成 int（QWidget.resize()／move() 不收 float），其餘回傳 default。
+
+    bool 是 int 的子類別，true/false 不能被當成像素值。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return default
+    return int(value)
+
+
+def normalize_window(raw):
+    """把 settings["window"] 整理成 {width, height, x, y, maximized}，不改動輸入。
+
+    型別不對的欄位換成預設值：width/height 用預設大小，x/y 為 None 代表位置交給
+    作業系統決定，maximized 預設為 True（與第一次啟動相同）。手改壞的設定檔
+    不能讓程式開不起來——字串寬度會讓 max() 丟 TypeError，而 bool("false") 是 True。
+    """
+    win = raw if isinstance(raw, dict) else {}
+    maximized = win.get("maximized")
+    return {
+        "width": _as_int(win.get("width"), DEFAULT_WINDOW_W),
+        "height": _as_int(win.get("height"), DEFAULT_WINDOW_H),
+        "x": _as_int(win.get("x"), None),
+        "y": _as_int(win.get("y"), None),
+        "maximized": maximized if isinstance(maximized, bool) else True,
+    }
+
+
 def restore_geometry(window, settings):
     """依 settings["window"] 還原視窗大小/位置/是否最大化。
 
     回傳 True 代表視窗啟動後應該呼叫 showMaximized()，否則呼叫 showNormal()。
     找不到設定（第一次啟動）時 fallback 回預設大小 + 最大化，與原本行為一致。
     """
-    win = settings.get("window") or {}
-    w = win.get("width", DEFAULT_WINDOW_W)
-    h = win.get("height", DEFAULT_WINDOW_H)
-    x, y = win.get("x"), win.get("y")
-    maximized = bool(win.get("maximized", True))
-
-    window.resize(max(w, MIN_WINDOW_W), max(h, MIN_WINDOW_H))
-    if isinstance(x, int) and isinstance(y, int) and point_on_any_screen(x, y):
+    win = normalize_window(settings.get("window"))
+    window.resize(max(win["width"], MIN_WINDOW_W), max(win["height"], MIN_WINDOW_H))
+    x, y = win["x"], win["y"]
+    if x is not None and y is not None and point_on_any_screen(x, y):
         window.move(x, y)
-    return maximized
+    return win["maximized"]
 
 
 def capture_geometry(window):

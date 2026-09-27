@@ -35,6 +35,15 @@ widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `clo
   `last_route`（上次的路線座標點）、`speed_kmh`（上次的移動速度）、
   `map`（地圖的 `tile_source`／`custom_tile_url`／`custom_attribution`／`center`／`zoom`／`follow`／
   `routing_costing`／`simplify_m`，由 `persistence.load_map_settings()` 補齊預設值）。
+  **每個欄位讀進來都要先檢查型別與範圍**，設定檔可能被手改壞：`window` 走
+  `window_geometry.normalize_window()`、`speed_kmh` 走 `persistence.load_speed_kmh()`、`last_route` 走
+  `load_saved_route()`、`map` 走 `load_map_settings()`（`center` 要在經緯度範圍內、`zoom` 在
+  `MAP_ZOOM_MIN`～`MAP_ZOOM_MAX`（對應 map.js 的 `maxZoom` 19）內，需要範圍檢查的欄位登記在
+  `_MAP_FIELD_PARSERS`）。不合法的欄位一律改用預設值（這些值下次存檔就會重新產生，不需要備份）。
+  共同的規則：布林／字串**只接受同型別**，不用 `bool()`／`str()` 硬轉（`bool("false")` 是 True）；
+  數值要排除 `bool`（是 `int` 的子類別）與 NaN／無限大（JSON 存得進去，送進 Qt 或 Leaflet 就壞）。
+  新增設定欄位時要照這個形狀補一個檢查，直接 `settings.get()` 拿來用的話，手改成字串就會讓程式
+  一啟動就丟 `TypeError`（修過的 bug：`speed_kmh`、`window.width` 都踩過）。
 
 ## 常用指令
 
@@ -48,7 +57,7 @@ python -m gps_qt.main
 # 手動啟動 tunneld（需「系統管理員」終端機，建立 iOS 26 的 RemoteXPC 加密通道）
 python -m pymobiledevice3 remote tunneld
 
-# 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定正規化、
+# 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定欄位的型別／範圍檢查、
 # 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
 # GPSSession._walk_route() 的續走／改速度／循環走法／時間間隔、KML 匯入、網路請求的節流與過期過濾）
 pip install -r requirements-dev.txt

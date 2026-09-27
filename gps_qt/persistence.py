@@ -1,6 +1,7 @@
 """JSON 存讀與 KML 解析：最愛地點／路線與本機設定的檔案格式。"""
 
 import json
+import math
 import os
 import shutil
 import time
@@ -190,6 +191,55 @@ DEFAULT_MAP_SETTINGS = {
 }
 
 
+# 與 map.js 圖磚圖層的 maxZoom 一致；超出範圍的縮放等級會讓地圖一片空白。
+MAP_ZOOM_MIN = 0
+MAP_ZOOM_MAX = 19
+
+
+def _is_finite_number(value):
+    # NaN／無限大存得進 JSON（Python 會寫成 NaN／Infinity），但送進 Qt 或 Leaflet 就壞掉。
+    return _is_number(value) and math.isfinite(value)
+
+
+def _map_center(value):
+    point = _normalize_point(value)
+    return None if point is None else point[:2]
+
+
+def _map_zoom(value):
+    if _is_finite_number(value) and MAP_ZOOM_MIN <= value <= MAP_ZOOM_MAX:
+        return int(value)
+    return None
+
+
+def _non_negative_float(value):
+    return float(value) if _is_finite_number(value) and value >= 0 else None
+
+
+# 需要額外檢查範圍的欄位；其餘欄位依預設值的型別檢查（見 _parse_map_field）。
+_MAP_FIELD_PARSERS = {
+    "center": _map_center,
+    "zoom": _map_zoom,
+    "simplify_m": _non_negative_float,
+}
+
+
+def _parse_map_field(key, default, value):
+    """檢查一個地圖設定欄位，合法回傳要存的值，不合法回傳 None（改用預設值）。
+
+    布林與字串欄位只接受同型別的值，不用 bool()／str() 硬轉：bool("false") 是 True，
+    手改設定檔時很容易踩到。
+    """
+    parser = _MAP_FIELD_PARSERS.get(key)
+    if parser is not None:
+        return parser(value)
+    if isinstance(default, bool):
+        return value if isinstance(value, bool) else None
+    if isinstance(default, str):
+        return value if isinstance(value, str) else None
+    return float(value) if _is_finite_number(value) else None
+
+
 def load_map_settings(settings):
     """讀出 settings["map"]，補齊缺漏或型別不對的欄位後放回 settings。
 
@@ -201,26 +251,23 @@ def load_map_settings(settings):
     result = dict(DEFAULT_MAP_SETTINGS)
     if isinstance(raw, dict):
         for key, default in DEFAULT_MAP_SETTINGS.items():
-            value = raw.get(key, default)
-            if isinstance(default, bool):
-                result[key] = bool(value)
-            elif isinstance(default, str):
-                result[key] = str(value)
-            elif key == "center":
-                if isinstance(value, (list, tuple)) and len(value) == 2:
-                    try:
-                        result[key] = [float(value[0]), float(value[1])]
-                    except (TypeError, ValueError):
-                        pass
-            else:
-                # 其餘是數值欄位（zoom 為 int、simplify_m 為 float），
-                # 型別跟著預設值走，新增欄位時不必再回來改這裡。
-                try:
-                    result[key] = type(default)(value)
-                except (TypeError, ValueError):
-                    pass
+            if key not in raw:
+                continue
+            value = _parse_map_field(key, default, raw[key])
+            if value is not None:
+                result[key] = value
     settings["map"] = result
     return result
+
+
+def load_speed_kmh(settings, default):
+    """上次的移動速度（km/h）；不是正的有限數值就回傳 default。
+
+    範圍上限交給速度欄位（QDoubleSpinBox 的 setRange）自己夾住，這裡只擋掉會讓
+    setValue() 丟 TypeError 的型別（例如被手改成字串）與沒有意義的值。
+    """
+    value = settings.get("speed_kmh")
+    return float(value) if _is_finite_number(value) and value > 0 else default
 
 
 def _kml_tag(elem):

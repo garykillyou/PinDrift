@@ -143,3 +143,14 @@ def test_load_saved_route_rejects_out_of_range_points():
 
     # Act / Assert
     assert persistence.load_saved_route(settings) is None
+
+
+@pytest.mark.parametrize("value", ["33", None, float("nan"), float("inf"), 0, -5, True, [33]])
+def test_load_speed_kmh_falls_back_on_invalid_values(value):
+    # Act / Assert
+    assert persistence.load_speed_kmh({"speed_kmh": value}, 20.0) == 20.0
+
+
+def test_load_speed_kmh_keeps_valid_value():
+    assert persistence.load_speed_kmh({"speed_kmh": 33}, 20.0) == 33.0
+    assert persistence.load_speed_kmh({}, 20.0) == 20.0
