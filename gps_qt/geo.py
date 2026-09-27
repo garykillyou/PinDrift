@@ -4,6 +4,20 @@ import bisect
 import math
 
 
+LAT_LIMIT = 90.0
+LON_LIMIT = 180.0
+
+
+def is_valid_latitude(value):
+    """value（數值）是否落在 ±90 內。NaN 的比較結果恆為假，所以也會被擋掉。"""
+    return -LAT_LIMIT <= value <= LAT_LIMIT
+
+
+def is_valid_longitude(value):
+    """value（數值）是否落在 ±180 內。NaN 的比較結果恆為假，所以也會被擋掉。"""
+    return -LON_LIMIT <= value <= LON_LIMIT
+
+
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -112,14 +126,34 @@ def index_at_distance(cumulative, distance_m):
 
 
 def interpolate_points(route, speed_ms, interval_sec):
-    points = []
-    for i in range(len(route) - 1):
-        lat1, lon1 = route[i][0], route[i][1]
-        lat2, lon2 = route[i + 1][0], route[i + 1][1]
-        dist = haversine(lat1, lon1, lat2, lon2)
-        steps = max(1, int(dist / (speed_ms * interval_sec)))
-        for s in range(steps):
-            t = s / steps
-            points.append((lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t))
-    points.append((route[-1][0], route[-1][1]))
+    """沿整條路線依弧長等距取樣，每 interval_sec 秒一個點，回傳 [(lat, lon), ...]。
+
+    刻意把整條路線當成一條連續的線來切，而不是逐段切（修過的 bug）：逐段切時
+    比一步還短的段也會佔掉一整秒（路線點越密越慢），1.9 步長的段又被 int()
+    捨去成一步（那一秒快將近一倍），實際速度與設定值、預計時間都對不上。
+
+    步數取「總長 / 步長」四捨五入，再把總長平均分配，每一步的距離都一樣、
+    整條路線的誤差不到半步。代價是轉角處會被截掉一點（最多約半步），
+    取樣點本身仍一律落在原本的路線上。
+    """
+    vertices = [(point[0], point[1]) for point in route]
+    if len(vertices) < 2:
+        return vertices
+    cumulative = cumulative_distances(vertices)
+    total = cumulative[-1]
+    step_m = speed_ms * interval_sec
+    count = max(1, round(total / step_m)) if step_m > 0 else 1
+    spacing = total / count
+
+    points = [vertices[0]]
+    seg = 0
+    for k in range(1, count):
+        target = k * spacing
+        while cumulative[seg + 1] < target:
+            seg += 1
+        seg_len = cumulative[seg + 1] - cumulative[seg]
+        t = (target - cumulative[seg]) / seg_len if seg_len > 0 else 0.0
+        (lat1, lon1), (lat2, lon2) = vertices[seg], vertices[seg + 1]
+        points.append((lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t))
+    points.append(vertices[-1])
     return points

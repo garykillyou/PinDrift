@@ -4,6 +4,10 @@ pindrift_favorites.json
 # 本機設定（主題偏好等，個人資料不上傳）
 pindrift_settings.json
 
+# 讀檔失敗時的備份與寫入中途的暫存檔（內容同樣是個人資料）
+pindrift_*.corrupt-*.json
+pindrift_*.json.tmp
+
 # Python
 __pycache__/
 *.py[cod]

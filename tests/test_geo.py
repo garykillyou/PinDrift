@@ -59,6 +59,67 @@ def test_interpolate_points_handles_speed_faster_than_whole_route():
     assert points[-1] == (24.001, 120.0)
 
 
+def _step_lengths(points):
+    return [haversine(a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:])]
+
+
+def test_interpolate_points_keeps_speed_on_segments_shorter_than_one_step():
+    """路線點比「每秒該走的距離」還密時，每秒仍要走滿設定的速度。
+
+    舊版逐段切割，一段不到一步也會佔掉一整秒：3 公尺一段、以 11 公尺/秒走，
+    實際速度只剩四分之一左右（修過的 bug）。
+    """
+    # Arrange：每段約 3.3 公尺，共 300 段、約 1 公里
+    route = [(24.0 + i * 0.00003, 120.0, "") for i in range(301)]
+    speed_ms = 11.0
+
+    # Act
+    points = interpolate_points(route, speed_ms, 1.0)
+
+    # Assert：每一步都接近 11 公尺，總步數接近「總距離 / 速度」
+    steps = _step_lengths(points)
+    total = cumulative_distances([(r[0], r[1]) for r in route])[-1]
+    assert all(step == pytest.approx(speed_ms, rel=0.02) for step in steps)
+    assert len(steps) == round(total / speed_ms)
+
+
+def test_interpolate_points_does_not_speed_up_on_a_segment_just_under_two_steps():
+    """一段是 1.9 步長時，舊版 int() 捨去成 1 步，那一秒會跑出將近兩倍速。"""
+    # Arrange：兩段各約 19 公尺，速度 10 公尺/秒
+    route = [(24.0, 120.0, ""), (24.00017, 120.0, ""), (24.00034, 120.0, "")]
+
+    # Act
+    points = interpolate_points(route, 10.0, 1.0)
+
+    # Assert
+    assert max(_step_lengths(points)) < 12.0
+
+
+def test_interpolate_points_samples_on_the_route_across_corners():
+    # Arrange：L 形路線，各邊約 111 公尺
+    route = [(24.0, 120.0, ""), (24.001, 120.0, ""), (24.001, 120.001, "")]
+
+    # Act
+    points = interpolate_points(route, 5.0, 1.0)
+
+    # Assert：每個取樣點都落在兩條邊之一上
+    for lat, lon in points:
+        on_first_leg = lon == pytest.approx(120.0) and 24.0 <= lat <= 24.001 + 1e-12
+        on_second_leg = lat == pytest.approx(24.001) and 120.0 <= lon <= 120.001 + 1e-12
+        assert on_first_leg or on_second_leg
+
+
+def test_interpolate_points_handles_route_with_zero_length():
+    # Arrange：所有點重疊，總長為 0
+    route = [(24.0, 120.0, ""), (24.0, 120.0, ""), (24.0, 120.0, "")]
+
+    # Act
+    points = interpolate_points(route, 5.0, 1.0)
+
+    # Assert
+    assert points == [(24.0, 120.0), (24.0, 120.0)]
+
+
 def test_douglas_peucker_keeps_endpoints_and_drops_collinear_points():
     # Arrange：一條直線上均勻取點，中間點對路形沒有貢獻
     points = [(24.0 + i * 0.001, 120.0) for i in range(11)]

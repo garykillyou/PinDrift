@@ -43,3 +43,33 @@ def test_write_json_propagates_serialization_bug(tmp_path):
         pass
     else:
         raise AssertionError("序列化錯誤應該照常拋出 TypeError")
+
+
+def test_write_json_leaves_original_intact_on_serialization_bug(tmp_path):
+    # Arrange：序列化失敗發生在碰到磁碟之前，原檔不能被清空，也不能留下暫存檔
+    target = tmp_path / "settings.json"
+    target.write_text('{"theme": "dark"}', encoding="utf-8")
+
+    # Act
+    try:
+        _write_json(str(target), {"bad": object()})
+    except TypeError:
+        pass
+
+    # Assert
+    assert json.loads(target.read_text(encoding="utf-8")) == {"theme": "dark"}
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_write_json_replaces_existing_file_without_leaving_temp_files(tmp_path):
+    # Arrange
+    target = tmp_path / "settings.json"
+    target.write_text('{"theme": "dark"}', encoding="utf-8")
+
+    # Act
+    result = _write_json(str(target), {"theme": "light"})
+
+    # Assert
+    assert result is None
+    assert json.loads(target.read_text(encoding="utf-8")) == {"theme": "light"}
+    assert list(tmp_path.iterdir()) == [target]

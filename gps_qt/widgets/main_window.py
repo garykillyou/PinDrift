@@ -37,7 +37,7 @@ COORDS_STRETCH = 2
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings = persistence.load_settings()
+        self.settings, settings_message = persistence.load_settings()
         self.theme_name = self.settings.get("theme", "dark")
         if self.theme_name not in ("dark", "light"):
             self.theme_name = "dark"
@@ -59,6 +59,10 @@ class MainWindow(QMainWindow):
         theme.apply(QApplication.instance(), self.theme_name)
         self._build_ui(route)
         self._apply_theme()
+        # 讀檔時的狀況（壞檔已備份等）要等執行日誌建好才寫得進去。
+        for message in (settings_message, self.favorites_panel.load_message):
+            if message:
+                self._log(message)
 
         self.session = GPSSession(
             route_provider=lambda: self.route_panel.route,

@@ -16,8 +16,13 @@ PinDrift 是一個 Python 桌面工具，透過 `pymobiledevice3` 模擬 iPhone�
 整包搬走設定就跟著走。`save_settings()`／`save_favorites()` 共用的 `_write_json()`
 **只攔 `OSError` 並回傳錯誤訊息字串（成功回傳 `None`）**，不丟例外——放在唯讀位置時
 存檔失敗不能讓 `closeEvent()` 整個炸掉；序列化失敗則照常拋 `TypeError`，那是程式的 bug。
+寫入是**先序列化、寫到 `.tmp` 再 `os.replace()`**，序列化失敗或寫到一半當機都不會留下被清空的原檔。
 三個呼叫端各自決定提示方式：切換主題走執行日誌、存最愛與關閉視窗走 `QMessageBox`
-（視窗都要關了，寫進日誌等於沒說）。新增存檔入口時要記得接這個回傳值：
+（視窗都要關了，寫進日誌等於沒說）。新增存檔入口時要記得接這個回傳值。
+讀取端 `load_settings()`／`load_favorites()` 回傳 **`(資料, 訊息)`**：檔案無法解析、最外層型別不對，
+或最愛裡有被 `normalize_favorite()` 略過的項目時，會先把原檔複製成
+`<檔名>.corrupt-<時間戳>.json` 再回報（`MainWindow` 建好版面後寫進執行日誌）。**絕對不能改回
+默默吞掉例外**（修過的 bug）：回傳預設值之後的下一次存檔會把壞檔連同還救得回來的資料整個蓋掉。
 - `pindrift_favorites.json`：最愛地點／路線（`{"type": "pin"|"route", "name", ...}` 陣列）。
 - `pindrift_settings.json`：`theme`（主題偏好）、`window`（視窗幾何 + `maximized`）、
   `last_route`（上次的路線座標點）、`speed_kmh`（上次的移動速度）、
@@ -36,7 +41,8 @@ python -m gps_qt.main
 # 手動啟動 tunneld（需「系統管理員」終端機，建立 iOS 26 的 RemoteXPC 加密通道）
 python -m pymobiledevice3 remote tunneld
 
-# 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定正規化、存檔失敗處理）
+# 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定正規化、
+# 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -122,7 +128,9 @@ PinDrift/
   `pending_action` 設成目前的 `self.direction` 並真正開始移動。UI 在移動中（`pending_action` 為
   `forward`/`reverse`）或斷線中（`disconnect`）會停用切換方向按鈕，要先「停止」才能再切方向。
   `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成
-  m/s）把路線切成每秒一個內插點。**進度記在 `travelled_m`（已走到路線的第幾公尺），不是「第幾個內插
+  m/s）把路線切成每秒一個內插點。**切法是把整條路線當成一條線依弧長等距取樣，不是逐段切**（修過的
+  bug）：逐段切時比一步短的段也會佔滿一秒、1.9 步長的段被 `int()` 捨成一步，路線點越密實際速度與
+  預計時間偏得越多。步數取「總長 / 步長」四捨五入後平均分配，代價是轉角會被截掉最多約半步。**進度記在 `travelled_m`（已走到路線的第幾公尺），不是「第幾個內插
   點」**（修過的 bug）：內插點的數量由速度決定，停止期間改過速度後同一個索引對到的位置完全不同，而
   `min(idx, total - 1)` 這種夾取會把超出範圍的索引直接夾到最後一點——實測 2.2 公里的路線以 5 km/h 走到
   中途是第 794 個點（共 1589 個），改成 60 km/h 後只剩 134 個點，再按「開始移動」人就瞬移到終點。距離
@@ -353,6 +361,9 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 [models.py](gps_qt/models.py) 的 `RouteTableModel(QAbstractTableModel)` + `RoutePanel`（[route_panel.py](gps_qt/widgets/route_panel.py)）
 裡的 `QTableView` 原生只 render 可見列，不論路線有幾個點都不需要手動管理列 widget 的重複利用。
 - 座標欄（緯度/經度/備註）靠 `Qt.ItemIsEditable` flag + `setData()` 支援直接編輯。
+  `setData()` 會用 `geo.is_valid_latitude()`／`is_valid_longitude()` 拒收超出範圍的值（含 NaN），
+  寫進模型的座標會原封不動送進 `sim.set()`。地圖端則在 `map.js` 送出點擊／拖曳座標前先
+  `latlng.wrap()`，地圖捲過換日線時經度才不會超出 ±180。
 - 刪除欄用自訂的 `DeleteButtonDelegate(QStyledItemDelegate)`：`paint()` 畫文字、`editorEvent()` 攔截點擊
   發出 `delete_requested(row)` signal。**刻意不用 `setIndexWidget()`**——那會替每一列建立一個真正的
   `QWidget` 並常駐，等於又要自己管理 widget 生命週期，違背用 `QTableView` 換掉手刻虛擬化的目的。

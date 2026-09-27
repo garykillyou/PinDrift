@@ -61,7 +61,9 @@ class FavoritesPanel(QFrame):
         self._pin_provider = pin_provider
         self._route_provider = route_provider
         self._mode_provider = mode_provider
-        self.favorites = persistence.load_favorites()
+        # 讀檔有狀況（檔案壞掉已備份、略過了格式不對的項目）時的說明，建構期間
+        # 還沒有地方可以顯示，由 MainWindow 在版面建好後寫進執行日誌。
+        self.favorites, self.load_message = persistence.load_favorites()
 
         layout = QVBoxLayout(self)
         title_row = QHBoxLayout()

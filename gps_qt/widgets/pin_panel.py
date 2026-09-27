@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..geo import is_valid_latitude, is_valid_longitude
 
 PIN_PRESETS = [
     ("台中火車站", 24.1368, 120.6862),
@@ -103,7 +104,7 @@ class PinPanel(QFrame):
             lon = float(parts[1].strip())
         except ValueError:
             return False
-        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        if not (is_valid_latitude(lat) and is_valid_longitude(lon)):
             return False
         self.lat_spin.setValue(lat)
         self.lon_spin.setValue(lon)

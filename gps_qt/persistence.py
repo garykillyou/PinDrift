@@ -2,9 +2,12 @@
 
 import json
 import os
+import shutil
+import time
 import xml.etree.ElementTree as ET
 
 from . import paths
+from .geo import is_valid_latitude, is_valid_longitude
 
 # 存放位置由 paths.data_file() 決定：一律放在執行檔（未凍結時是專案根目錄）
 # 所在的資料夾，整包搬走設定就跟著走。
@@ -13,13 +16,20 @@ SETTINGS_FILE = paths.data_file("pindrift_settings.json")
 
 
 def load_favorites():
-    if os.path.exists(FAVORITES_FILE):
-        try:
-            with open(FAVORITES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
+    """讀取最愛，回傳 (favorites, message)；message 為 None 代表一切正常。
+
+    格式不對的項目直接略過（不讓一筆壞資料把整個清單或啟動流程弄掛），但只要
+    有略過任何東西，就先把原檔備份起來——否則使用者下一次存最愛時，被略過的
+    那些資料就會隨著覆寫永遠消失。
+    """
+    raw, message = _read_json(FAVORITES_FILE, list, "陣列")
+    if raw is None:
+        return [], message
+    favorites = [fav for fav in (normalize_favorite(item) for item in raw) if fav is not None]
+    dropped = len(raw) - len(favorites)
+    if dropped:
+        message = _backup_corrupt(FAVORITES_FILE, f"有 {dropped} 筆最愛格式不正確，已略過")
+    return favorites, message
 
 
 def save_favorites(favs):
@@ -28,18 +38,56 @@ def save_favorites(favs):
 
 
 def load_settings():
-    if os.path.exists(SETTINGS_FILE):
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    """讀取設定，回傳 (settings, message)；壞掉的檔案會先備份再改用空設定。"""
+    raw, message = _read_json(SETTINGS_FILE, dict, "物件")
+    return (raw if raw is not None else {}), message
 
 
 def save_settings(settings):
     """寫入設定；成功回傳 None，失敗回傳錯誤訊息（見 _write_json）。"""
     return _write_json(SETTINGS_FILE, settings)
+
+
+def _read_json(path, expected_type, type_label):
+    """讀取 JSON，回傳 (data, message)。
+
+    - 檔案不存在：(None, None)，第一次啟動的正常情況。
+    - 讀不到（權限不足等）：(None, 訊息)。檔案本身沒壞，不需要備份。
+    - 內容無法解析，或最外層不是 expected_type：先備份原檔再回傳 (None, 訊息)。
+      舊版在這裡默默吞掉例外並回傳預設值，下一次存檔就把壞檔（連同裡面還救得
+      回來的資料）整個蓋掉，使用者連發生過什麼事都不知道（修過的 bug）。
+
+    用 utf-8-sig 解碼：記事本另存 UTF-8 時會在開頭加 BOM，json 不接受 BOM。
+    """
+    name = os.path.basename(path)
+    try:
+        with open(path, "rb") as f:
+            raw_bytes = f.read()
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        return None, f"無法讀取 {path}：{exc}，已改用預設值"
+    try:
+        data = json.loads(raw_bytes.decode("utf-8-sig"))
+    except ValueError as exc:  # JSONDecodeError 與 UnicodeDecodeError 都是 ValueError
+        return None, _backup_corrupt(path, f"{name} 內容無法解析（{exc}），已改用預設值")
+    if not isinstance(data, expected_type):
+        return None, _backup_corrupt(path, f"{name} 格式不正確（最外層應為{type_label}），已改用預設值")
+    return data, None
+
+
+def _backup_corrupt(path, reason):
+    """把有問題的原檔複製一份帶時間戳的備份，回傳要告訴使用者的訊息。
+
+    檔名帶時間戳，同一個檔案壞第二次也不會蓋掉前一次的備份。
+    """
+    base, ext = os.path.splitext(path)
+    backup = f"{base}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}{ext}"
+    try:
+        shutil.copy2(path, backup)
+    except OSError as exc:
+        return f"{reason}；備份原檔失敗（{exc}），下次存檔會覆蓋 {path}，請先自行備份"
+    return f"{reason}；原檔已備份為 {backup}"
 
 
 def _write_json(path, payload):
@@ -48,12 +96,71 @@ def _write_json(path, payload):
     寫不進去（唯讀資料夾、權限不足、磁碟滿了）時回傳錯誤訊息而不是丟例外：
     存檔失敗不該讓關閉視窗的流程整個炸掉，由呼叫端決定要用執行日誌還是對話框提示。
     只攔 OSError——序列化本身失敗是程式的 bug，要讓它照常拋出來。
+
+    先序列化成字串再碰磁碟，並寫到暫存檔後用 os.replace() 一次換掉原檔：
+    直接開原檔寫入的話，序列化失敗或寫到一半當機都會留下被清空/截斷的檔案。
     """
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    tmp_path = path + ".tmp"
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
     except OSError as exc:
+        _remove_if_exists(tmp_path)
         return f"無法寫入 {path}：{exc}"
+    return None
+
+
+def _remove_if_exists(path):
+    # 只是清掉寫失敗留下的暫存檔；清不掉也不影響原檔，真正的錯誤已由呼叫端回報。
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _is_number(value):
+    # bool 是 int 的子類別，true/false 不能被當成座標。
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _normalize_point(item):
+    """[lat, lon] 或 [lat, lon, note] 正規化成新的 [lat, lon, note]；不合法回傳 None。"""
+    if not isinstance(item, (list, tuple)) or len(item) not in (2, 3):
+        return None
+    lat, lon = item[0], item[1]
+    if not (_is_number(lat) and _is_number(lon)):
+        return None
+    lat, lon = float(lat), float(lon)
+    if not (is_valid_latitude(lat) and is_valid_longitude(lon)):
+        return None
+    note = item[2] if len(item) == 3 else ""
+    return [lat, lon, str(note)]
+
+
+def normalize_favorite(fav):
+    """驗證一筆最愛，回傳正規化後的新 dict；格式不合回傳 None。
+
+    未知的欄位原樣保留，日後新增欄位時舊版讀到也不會把它弄丟。
+    """
+    if not isinstance(fav, dict) or not isinstance(fav.get("name"), str):
+        return None
+    if fav.get("type") == "pin":
+        point = _normalize_point([fav.get("lat"), fav.get("lon")])
+        if point is None:
+            return None
+        return {**fav, "lat": point[0], "lon": point[1]}
+    if fav.get("type") == "route":
+        raw = fav.get("route")
+        if not isinstance(raw, list) or len(raw) < 2:
+            return None
+        route = [_normalize_point(item) for item in raw]
+        if any(point is None for point in route):
+            return None
+        return {**fav, "route": route}
     return None
 
 
@@ -62,14 +169,9 @@ def load_saved_route(settings):
     raw = settings.get("last_route")
     if not isinstance(raw, list) or len(raw) < 2:
         return None
-    route = []
-    for item in raw:
-        if not isinstance(item, (list, tuple)) or len(item) != 3:
-            return None
-        lat, lon, name = item
-        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-            return None
-        route.append([lat, lon, str(name)])
+    route = [_normalize_point(item) for item in raw]
+    if any(point is None for point in route):
+        return None
     return route
 
 

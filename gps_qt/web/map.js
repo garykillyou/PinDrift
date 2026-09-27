@@ -127,7 +127,9 @@ function onMapClick(e) {
   if (!bridge || state.locked) {
     return;
   }
-  bridge.on_map_clicked(e.latlng.lat, e.latlng.lng);
+  // 地圖可以左右無限捲動，捲過換日線後經度會超出 ±180，送回 Python 前先折回合法範圍。
+  var latlng = e.latlng.wrap();
+  bridge.on_map_clicked(latlng.lat, latlng.lng);
 }
 
 function onUserDrag() {
@@ -212,7 +214,7 @@ function bindRouteMarker(marker) {
     routeLine.setLatLngs(latlngs);
   });
   marker.on("dragend", function () {
-    var latlng = marker.getLatLng();
+    var latlng = marker.getLatLng().wrap();
     if (bridge) {
       bridge.on_point_dragged(marker.routeIndex, latlng.lat, latlng.lng);
     }
@@ -233,7 +235,7 @@ function renderPin(lat, lon) {
     pinMarker = L.marker([lat, lon], { icon: pinIcon(), draggable: true });
     pinMarker.addTo(pinLayer);
     pinMarker.on("dragend", function () {
-      var latlng = pinMarker.getLatLng();
+      var latlng = pinMarker.getLatLng().wrap();
       if (bridge) {
         bridge.on_pin_dragged(latlng.lat, latlng.lng);
       }

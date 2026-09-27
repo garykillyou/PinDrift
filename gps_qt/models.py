@@ -7,6 +7,8 @@ QTableView + QAbstractTableModel 原生只 render 可見列，不論路線有幾
 from PySide6.QtCore import QAbstractTableModel, QEvent, QModelIndex, Qt, Signal
 from PySide6.QtWidgets import QStyledItemDelegate
 
+from .geo import is_valid_latitude, is_valid_longitude
+
 COL_INDEX, COL_LAT, COL_LON, COL_NOTE, COL_DELETE = range(5)
 HEADERS = ["#", "緯度", "經度", "備註", ""]
 
@@ -59,15 +61,26 @@ class RouteTableModel(QAbstractTableModel):
             return Qt.AlignCenter
         return None
 
+    @property
+    def route(self):
+        return self._route
+
     def setData(self, index, value, role=Qt.EditRole):
         if role != Qt.EditRole or not index.isValid():
             return False
         row, col = index.row(), index.column()
         try:
+            # 超出範圍的經緯度直接拒收：寫進去的值會原封不動送進 sim.set()。
             if col == COL_LAT:
-                self._route[row][0] = float(value)
+                lat = float(value)
+                if not is_valid_latitude(lat):
+                    return False
+                self._route[row][0] = lat
             elif col == COL_LON:
-                self._route[row][1] = float(value)
+                lon = float(value)
+                if not is_valid_longitude(lon):
+                    return False
+                self._route[row][1] = lon
             elif col == COL_NOTE:
                 self._route[row][2] = str(value)
             else:
