@@ -42,7 +42,8 @@ python -m gps_qt.main
 python -m pymobiledevice3 remote tunneld
 
 # 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定正規化、
-# 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查）
+# 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
+# GPSSession._walk_route() 的續走／改速度／循環走法／時間間隔）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -62,7 +63,10 @@ tunneld 的主控台輸出），已凍結時跑同一個資料夾裡的 `PinDrif
 機器上沒有 Python，`python -m pymobiledevice3 ...` 那條路整條斷掉。
 [run.bat](run.bat) 因此只剩「用 `pythonw` 開 App」一件事。
 
-測試只涵蓋不需要 Qt 事件迴圈的純函式（[tests/](tests)），Widget 與地圖頁面沒有自動化測試；
+測試只涵蓋不需要 Qt 事件迴圈的邏輯（[tests/](tests)），Widget 與地圖頁面沒有自動化測試。
+`GPSSession` 只用到 QtCore 的 signal，可以直接 `asyncio.run(session._walk_route(...))` 測；
+[test_session.py](tests/test_session.py) 把 `_now()`／`_sleep_until()` 換成假的時鐘、`sim` 換成
+記錄呼叫的假物件，一秒一步的路線不用真的等。
 專案沒有 lint 設定，也沒有 CI。
 
 ## 架構重點
@@ -81,7 +85,7 @@ PinDrift/
 ├── .gitattributes         # vendored 的 Leaflet 檔案排除行尾轉換（見下方地圖面板）
 ├── LICENSE                # MIT 授權條款全文
 ├── conftest.py            # 讓 pytest 把根目錄加進 sys.path
-├── tests/                 # 純函式測試（不需要 Qt 事件迴圈）
+├── tests/                 # 邏輯測試（不需要 Qt 事件迴圈；session 用假時鐘）
 └── gps_qt/
     ├── main.py              # 進入點：QApplication + qasync 事件迴圈
     ├── paths.py             # 資源／使用者資料的路徑解析（打包後兩者要分開）
@@ -140,6 +144,15 @@ PinDrift/
   ——舊的已走距離對新路線沒有意義。觸發點是 `RouteTableModel` 的 `modelReset`，它只在 `set_route()`／
   `clear()` 發出，剛好對應「載入最愛」「路徑規劃算完」「簡化目前路線」「清空座標點」四個整條替換的入口，不會被單點
   編輯誤觸。新增任何會整批換掉路線的入口時，要確認它有走到 `set_route()`／`clear()`。
+  `_walk_route()` 拆成三段：`_resume_index()`（`travelled_m` → 起始索引）、`_walk_points()`（一步步注入）、
+  `_on_route_end()`（抵達端點後依循環設定決定下一輪方向，回傳 `None` 代表停下）。
+  - **移動中改速度會在下一步生效**：`_walk_points()` 每一步都比對 `speed_provider()`，變了就回傳
+    `_SPEED_CHANGED`，由外層依 `travelled_m` 用新速度重新內插。此時 `_resume_index()` 的
+    `skip_current` 會跳到行進方向上的下一個點，否則剛注入過的位置會被重送一次、原地多停一秒。
+  - **每一步排在固定刻度上**（`next_tick += STEP_INTERVAL_S`，用 `_sleep_until()` 等到那個時間點），
+    會扣掉 `sim.set()` 本身的往返耗時（修過的 bug）：舊寫法是 `set()` 之後固定 `sleep(1.0)`，實際間隔
+    是「一秒 + 往返時間」，長路線會越走越慢。某一步卡得比一個間隔還久時用 `max(..., _now())` 從當下
+    重新起算，不連續補送落後的步數（那等於在地圖上瞬間跳一段）。
   循環模式不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()` 與
   `loop_style_provider()`，因此使用者中途勾選／切換走法會在下一次抵達端點時生效。循環有兩種走法
   （[route_panel.py](gps_qt/widgets/route_panel.py) 的 `loop_style_combo`，僅在勾選循環模式時才啟用）：
@@ -170,6 +183,12 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
 - **marker 一律用 `draggable: true` 建立，再視情況 `dragging.disable()`**：Leaflet 只有在建構時
   `options.draggable` 為真才會建立 `marker.dragging` handler，用 `false` 建立的 marker 之後
   再也無法啟用拖曳。編輯鎖切換只呼叫 `enable()`/`disable()`，不重建 marker。
+- **`syncRouteMarkers()` 只更新真的有變的部分**：座標沒變就不 `setLatLng()`，`routeIconKey()`（序號 +
+  是否為起訖點）沒變就不 `setIcon()`；彈出視窗在建立 marker 時用函式綁一次，開啟時才依
+  `marker.routeIndex`／`marker.routePoint` 產生內容。舊寫法每次都對全部 marker 重新 `setIcon()` +
+  `bindPopup()`，2000 個點時移動一點要約 55 ms，改完約 0.5 ms。新增 marker 屬性時要記得在這裡同步，
+  否則彈出視窗會顯示舊資料。拖曳中的折線則是直接改 `getLatLngs()` 回傳的內部陣列再 `redraw()`
+  （會重新投影），不用 `setLatLngs()` 把整條線的座標重新轉換一次。
 - **頁面是非同步載入的**：`MapPanel` 的每一項狀態都先存成成員變數，等頁面回報 `map_ready`
   才在 `_on_map_ready()` 一次推過去（順序有意義：先視野與圖磚，再畫內容，最後才套鎖定狀態——
   鎖定會把節點圖層整層拿掉，必須在節點已存在之後）。之後的變動才即時送出。

@@ -182,36 +182,57 @@ function renderRoute(json) {
 }
 
 function syncRouteMarkers(points) {
+  // 只更新真的有變的部分：路線點上千個時（簡化關閉），每次改動都把全部 marker
+  // 的圖示與彈出視窗重建一遍，拖一個點就要重建上千個 DOM 元素。
   while (routeMarkers.length > points.length) {
     routeMarkerLayer.removeLayer(routeMarkers.pop());
   }
   for (var i = 0; i < points.length; i++) {
-    var latlng = [points[i][0], points[i][1]];
     var marker = routeMarkers[i];
+    var iconKey = routeIconKey(i, points.length);
     if (!marker) {
       // 一律用 draggable: true 建立再視情況 disable()：Leaflet 只有在建構時
       // options.draggable 為真才會建立 marker.dragging handler，用 false 建立
       // 之後就再也無法啟用拖曳。
-      marker = L.marker(latlng, { icon: routeIcon(i, points.length), draggable: true });
+      marker = L.marker([points[i][0], points[i][1]], {
+        icon: routeIcon(i, points.length),
+        draggable: true
+      });
       marker.addTo(routeMarkerLayer);
       bindRouteMarker(marker);
+      setDraggable(marker, !state.locked);
       routeMarkers[i] = marker;
     } else {
-      marker.setLatLng(latlng);
-      marker.setIcon(routeIcon(i, points.length));
+      var current = marker.getLatLng();
+      if (current.lat !== points[i][0] || current.lng !== points[i][1]) {
+        marker.setLatLng([points[i][0], points[i][1]]);
+      }
+      if (marker.iconKey !== iconKey) {
+        marker.setIcon(routeIcon(i, points.length));
+      }
     }
+    marker.iconKey = iconKey;
     marker.routeIndex = i;
-    marker.bindPopup(pointPopupHtml(i, points[i]));
-    setDraggable(marker, !state.locked);
+    marker.routePoint = points[i];
   }
 }
 
+function routeIconKey(index, total) {
+  // 圖示只取決於序號與「是不是起點／終點」，兩者都沒變就不必 setIcon() 重建 DOM。
+  var role = index === 0 ? "start" : (index === total - 1 ? "end" : "");
+  return index + ":" + role;
+}
+
 function bindRouteMarker(marker) {
+  // 彈出視窗的內容在打開時才依目前的序號與座標產生，不必每次路線變動都重新綁定。
+  marker.bindPopup(function () {
+    return pointPopupHtml(marker.routeIndex, marker.routePoint);
+  });
   marker.on("drag", function () {
     // 拖曳過程只在本地更新折線，不通知 Python，避免每個 mousemove 都往回打一次。
-    var latlngs = routeLine.getLatLngs();
-    latlngs[marker.routeIndex] = marker.getLatLng();
-    routeLine.setLatLngs(latlngs);
+    // 直接改折線自己的座標陣列再 redraw()：setLatLngs() 會把整條線的座標重新轉換一次。
+    routeLine.getLatLngs()[marker.routeIndex] = marker.getLatLng();
+    routeLine.redraw();
   });
   marker.on("dragend", function () {
     var latlng = marker.getLatLng().wrap();

@@ -16,6 +16,13 @@ from PySide6.QtCore import QObject, Signal
 
 from .geo import cumulative_distances, index_at_distance, interpolate_points
 
+STEP_INTERVAL_S = 1.0  # 每隔幾秒注入一次座標
+# 兩個累積距離相差不到這個值就當成同一個位置（浮點誤差的容許範圍）。
+_SAME_POSITION_M = 0.01
+
+# _walk_points() 的結果：被外部動作打斷／移動中改了速度／走到端點。
+_INTERRUPTED, _SPEED_CHANGED, _ARRIVED = range(3)
+
 
 class GPSSession(QObject):
     log = Signal(str)
@@ -161,70 +168,86 @@ class GPSSession(QObject):
         走，直到 pending_action 被改成別的值——使用者可以在路上隨時勾選或切換，
         下次抵達端點就會生效。循環有兩種走法：
         「來回」（bounce）在端點折返、方向反轉；「迴圈」（circuit）方向不變，
-        瞬移回路線另一端繼續走，模擬繞圈。"""
-        action_name = "forward" if direction == 1 else "reverse"
+        瞬移回路線另一端繼續走，模擬繞圈。
+
+        移動中改速度會在下一步就生效：_walk_points() 發現速度變了就提早回來，
+        這裡依 travelled_m 用新速度重新內插，從原地接著走。"""
         if direction == -1:
             self.log.emit("返回中，沿路線往回走...")
 
+        skip_current = False
         while True:
-            suffix = "" if direction == 1 else "（返回中）"
             speed = self._speed_provider()
-            route = self._route_provider()
-            points = interpolate_points([(r[0], r[1], "") for r in route], speed, 1.0)
-            total = len(points)
+            points = interpolate_points(self._route_provider(), speed, STEP_INTERVAL_S)
             # 每一輪都重算：速度或路線在停止期間被改過的話，內插點的數量與間距
             # 都會不同，必須用已走距離重新換算成這份內插結果裡的索引。
             cumulative = cumulative_distances(points)
-            idx = index_at_distance(cumulative, self.travelled_m)
-            idx_range = range(idx, total) if direction == 1 else range(idx, -1, -1)
-
-            interrupted = False
-            for i in idx_range:
-                if self.pending_action != action_name:
-                    interrupted = True
-                    break
-                lat, lon = points[i]
-                await sim.set(lat, lon)
-                self.position_changed.emit(lat, lon)
-                idx = i
-                self.travelled_m = cumulative[i]
-                frac = (i + 1) / total if direction == 1 else i / total
-                self.progress_value.emit(frac)
-                self.progress_label.emit(f"{frac*100:.1f}%  {lat:.6f}, {lon:.6f}{suffix}")
-                await asyncio.sleep(1.0)
-
-            if interrupted:
+            start = self._resume_index(cumulative, direction, skip_current)
+            outcome, idx = await self._walk_points(sim, points, cumulative, start, direction, speed)
+            if outcome == _INTERRUPTED:
+                return
+            skip_current = outcome == _SPEED_CHANGED
+            if skip_current:
+                continue
+            direction = self._on_route_end(direction, cumulative, idx)
+            if direction is None:
                 return
 
-            # 走到端點才即時讀取循環開關/走法，而不是在函式一開始就快取，這樣
-            # 使用者中途勾選/切換才會在下一次抵達端點時生效。
-            if self.pending_action == action_name and self._loop_provider():
-                if self._loop_style_provider() == "circuit":
-                    # 迴圈模式：方向不變，瞬移回路線另一端繼續走。
-                    if direction == 1:
-                        self.log.emit("迴圈模式：已抵達終點，返回起點繼續前進")
-                        idx = 0
-                    else:
-                        self.log.emit("迴圈模式：已回到起點，返回終點繼續前進")
-                        idx = total - 1
-                    self.travelled_m = cumulative[idx]
-                    continue
+    def _resume_index(self, cumulative, direction, skip_current):
+        """把 travelled_m 換算成這份內插結果裡要從哪個索引開始走。
 
-                if direction == 1:
-                    self.log.emit("循環模式：已抵達終點，沿路線折返")
-                else:
-                    self.log.emit("循環模式：已回到起點，再次出發")
-                direction = -direction
-                # 折返後，方向被動改變，pending_action/action_name/direction
-                # 都要跟著更新，「往起點」/「往終點」按鈕文字才不會停留在舊方向。
-                action_name = "forward" if direction == 1 else "reverse"
-                self.pending_action = action_name
-                self.direction = action_name
-                self.direction_changed.emit()
-                idx = max(0, min(idx + direction, total - 1))
-                self.travelled_m = cumulative[idx]
-                continue
+        skip_current 在「移動中途改速度」時為真：travelled_m 對應的位置剛剛才注入
+        過，要從行進方向上的下一個點開始，否則會在原地多停一秒。索引可能因此超出
+        範圍（剛好停在端點），此時 _walk_points() 一步都不走，直接當作抵達端點。
+        """
+        idx = index_at_distance(cumulative, self.travelled_m)
+        if not skip_current:
+            return idx
+        if direction == 1 and cumulative[idx] <= self.travelled_m + _SAME_POSITION_M:
+            return idx + 1
+        if direction == -1 and cumulative[idx] >= self.travelled_m - _SAME_POSITION_M:
+            return idx - 1
+        return idx
 
+    async def _walk_points(self, sim, points, cumulative, start, direction, speed):
+        """從 start 開始每 STEP_INTERVAL_S 秒注入一點，回傳 (結果, 最後停留的索引)。
+
+        每一步的時間點是從這一輪開始時算好的固定刻度，會扣掉 sim.set() 本身的耗時；
+        單純在 set() 之後 sleep 一秒的話，實際間隔是「一秒 + 往返時間」，長路線跑
+        下來會越來越落後設定的速度。某一步卡得比一個間隔還久時就從當下重新起算，
+        不連續補送落後的那幾步（那等於在地圖上瞬間跳一段）。
+        """
+        action_name = _action_for(direction)
+        suffix = "" if direction == 1 else "（返回中）"
+        total = len(points)
+        idx = min(max(start, 0), total - 1)
+        indices = range(start, total) if direction == 1 else range(start, -1, -1)
+        next_tick = self._now()
+        for i in indices:
+            if self.pending_action != action_name:
+                return _INTERRUPTED, idx
+            if self._speed_provider() != speed:
+                return _SPEED_CHANGED, idx
+            lat, lon = points[i]
+            await sim.set(lat, lon)
+            self.position_changed.emit(lat, lon)
+            idx = i
+            self.travelled_m = cumulative[i]
+            frac = (i + 1) / total if direction == 1 else i / total
+            self.progress_value.emit(frac)
+            self.progress_label.emit(f"{frac*100:.1f}%  {lat:.6f}, {lon:.6f}{suffix}")
+            next_tick = max(next_tick + STEP_INTERVAL_S, self._now())
+            await self._sleep_until(next_tick)
+        return _ARRIVED, idx
+
+    def _on_route_end(self, direction, cumulative, idx):
+        """抵達端點：回傳下一輪要走的方向，不再繼續走時回傳 None。
+
+        走到端點才即時讀取循環開關/走法，而不是在一開始就快取，這樣使用者
+        中途勾選/切換才會在下一次抵達端點時生效。
+        """
+        action_name = _action_for(direction)
+        if self.pending_action != action_name or not self._loop_provider():
             if direction == 1:
                 message = "已抵達終點，保持於目前座標"
             else:
@@ -233,4 +256,39 @@ class GPSSession(QObject):
             self.progress_label.emit("已完成")
             self.route_finished.emit(message)
             self.pending_action = "pause"
-            return
+            return None
+
+        last = len(cumulative) - 1
+        if self._loop_style_provider() == "circuit":
+            # 迴圈模式：方向不變，瞬移回路線另一端繼續走。
+            if direction == 1:
+                self.log.emit("迴圈模式：已抵達終點，返回起點繼續前進")
+                self.travelled_m = cumulative[0]
+            else:
+                self.log.emit("迴圈模式：已回到起點，返回終點繼續前進")
+                self.travelled_m = cumulative[last]
+            return direction
+
+        if direction == 1:
+            self.log.emit("循環模式：已抵達終點，沿路線折返")
+        else:
+            self.log.emit("循環模式：已回到起點，再次出發")
+        direction = -direction
+        # 折返後，方向被動改變，pending_action 與 direction 都要跟著更新，
+        # 「往起點」/「往終點」按鈕文字才不會停留在舊方向。
+        self.pending_action = _action_for(direction)
+        self.direction = self.pending_action
+        self.direction_changed.emit()
+        self.travelled_m = cumulative[max(0, min(idx + direction, last))]
+        return direction
+
+    # ── 時間掛勾（測試會換成假的時鐘，不必真的一秒一秒等） ────────────────────
+    def _now(self):
+        return asyncio.get_running_loop().time()
+
+    async def _sleep_until(self, deadline):
+        await asyncio.sleep(max(0.0, deadline - self._now()))
+
+
+def _action_for(direction):
+    return "forward" if direction == 1 else "reverse"
