@@ -206,9 +206,12 @@ PinDrift/
 │   └── web/                # 內嵌地圖頁面（Leaflet，含本地副本，不依賴 CDN）
 ├── tests/                  # 純函式測試（pytest）
 ├── conftest.py             # 讓 pytest 找得到 gps_qt 套件
-├── requirements.txt        # 相依套件
+├── requirements.txt        # 相依套件（版本範圍）
 ├── requirements-dev.txt    # 測試相依（執行 App 本身不需要）
 ├── requirements-build.txt  # 打包相依（PyInstaller，執行 App 本身不需要）
+├── requirements-lock.txt   # 打包用的固定版本（實測過的版本，含遞移相依）
+├── scripts/
+│   └── lock_requirements.py  # 依目前環境重新產生 requirements-lock.txt
 ├── run.bat                 # 啟動捷徑（免主控台視窗啟動）
 ├── build.bat               # 打包捷徑（產生 dist/PinDrift/）
 ├── PinDrift.spec           # PyInstaller 設定
@@ -240,9 +243,13 @@ PinDrift/
 產生一個可以整包交付的資料夾，目標機器不需要安裝 Python：
 
 ```bash
-pip install -r requirements-build.txt
+pip install -r requirements-lock.txt
 python -m PyInstaller --noconfirm --clean PinDrift.spec
 ```
+
+- **打包一律裝 `requirements-lock.txt`**：`requirements.txt` 只寫版本範圍，重新安裝時可能抓到
+  範圍內較新、還沒實測過的版本（pymobiledevice3 改版常搬動模組路徑）。升級套件並實測過之後，
+  執行 `python scripts/lock_requirements.py` 重新產生鎖定檔。
 
 - **打包機需要一份 OpenSSL 3（x64）的 DLL**（`libssl-3-x64.dll`、`libcrypto-3-x64.dll`），
   會一起打包進去，讓地名搜尋與路徑規劃在每台電腦上都走同一套 TLS。有裝
@@ -260,7 +267,7 @@ python -m PyInstaller --noconfirm --clean PinDrift.spec
 - 本工具僅供學習、測試用途
 - 部分遊戲或 App 有反作弊機制，使用需自行承擔風險
 - **按「停止」不會恢復真實定位**：連線會保持著、定位停在目前座標。要讓 iPhone 回到真實 GPS，
-  必須按「恢復真實定位」（或直接關閉 App / tunneld）
+  必須按「恢復真實定位」。模擬中關閉 App 會先詢問，確定後自動恢復真實定位再關閉
 - **路徑規劃或地名搜尋出現 `SSL handshake failed`**：通常是用了沒打包 OpenSSL 的舊版，或更新時
   只換了 exe、沒換 `_internal`，請整包換成新版。如果換了新版還是失敗、錯誤變成憑證相關，
   多半是防毒軟體或公司網路在攔截 HTTPS。地圖圖磚走的是另一套連線，不受這個問題影響

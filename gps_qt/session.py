@@ -15,13 +15,14 @@ import logging
 
 from PySide6.QtCore import QObject, Signal
 
-from .geo import cumulative_distances, index_at_distance, interpolate_points
+from . import tunneld
+from .geo import RouteSampler
 
 logger = logging.getLogger(__name__)
 
 STEP_INTERVAL_S = 1.0  # 每隔幾秒注入一次座標
 MIN_ROUTE_POINTS = 2  # 路線至少要兩個點才能內插
-# 兩個累積距離相差不到這個值就當成同一個位置（浮點誤差的容許範圍）。
+# 兩個弧長位置相差不到這個值就當成同一個位置（浮點誤差的容許範圍）。
 _SAME_POSITION_M = 0.01
 
 # _walk_points() 的結果：被外部動作打斷／移動中改了速度／走到端點。
@@ -57,6 +58,10 @@ class GPSSession(QObject):
         self._loop_style_provider = loop_style_provider
 
         self.session_active = False
+        # pending_action 一變就喚醒正在等待的迴圈（見 _wait_for_action_change()）。
+        # Event 綁定建立時所在的事件迴圈，所以延到第一次等待時才在當下的迴圈建立。
+        self._action_event = None
+        self._action_event_loop = None
         self.pending_action = "pause"  # "forward" | "reverse" | "pause" | "disconnect"
         self.direction = "forward"  # "forward" | "reverse"，下次「開始移動」要走的方向
         # 進度記「已走到路線的第幾公尺」而不是「第幾個內插點」：內插點的數量
@@ -66,6 +71,19 @@ class GPSSession(QObject):
         # 最後一次實際注入的座標；連線結束時歸零（UI 用來判斷座標有沒有變）。
         self.last_position = None
         self._task = None
+
+    @property
+    def pending_action(self):
+        return self._pending_action
+
+    @pending_action.setter
+    def pending_action(self, action):
+        # 不論是按鈕、循環折返還是測試改的，一律立刻喚醒等待中的迴圈：
+        # 不這樣做的話「停止」要等到下一步的刻度（最多一秒）才生效，
+        # 待機中按「開始移動」也要等下一輪輪詢。
+        self._pending_action = action
+        if self._action_event is not None:
+            self._action_event.set()
 
     # ── 外部呼叫的動作：對應原本四顆按鈕 ────────────────────
     def start_forward(self):
@@ -119,7 +137,7 @@ class GPSSession(QObject):
                 rsds = await get_tunneld_devices()
             except Exception as e:
                 self.log.emit("tunneld 連線失敗：" + str(e))
-                self.log.emit("   請先以系統管理員執行：python -m pymobiledevice3 remote tunneld")
+                self.log.emit("   " + tunneld.manual_start_hint())
                 return
 
             if not rsds:
@@ -142,7 +160,7 @@ class GPSSession(QObject):
                     elif action == "reverse":
                         await self._walk_route(sim, -1)
                     else:
-                        await asyncio.sleep(0.2)
+                        await self._wait_for_action_change(action)
                         continue
                     if self.pending_action == "pause":
                         self.paused.emit()
@@ -208,49 +226,53 @@ class GPSSession(QObject):
                 self.pending_action = "pause"
                 return
             speed = self._speed_provider()
-            points = interpolate_points(route, speed, STEP_INTERVAL_S)
-            # 每一輪都重算：速度或路線在停止期間被改過的話，內插點的數量與間距
-            # 都會不同，必須用已走距離重新換算成這份內插結果裡的索引。
-            cumulative = cumulative_distances(points)
-            start = self._resume_index(cumulative, direction, skip_current)
-            outcome, idx = await self._walk_points(sim, points, cumulative, start, direction, speed)
+            # 每一輪都重建：速度或路線在停止期間被改過的話，步數與步長都會不同，
+            # 必須用已走距離重新換算成這一輪的索引。RouteSampler 只處理原本的
+            # 路線點、需要哪一步才算那一步，不會一次展開幾十萬個內插點。
+            sampler = RouteSampler(route, speed * STEP_INTERVAL_S)
+            start = self._resume_index(sampler, direction, skip_current)
+            outcome, idx = await self._walk_points(sim, sampler, start, direction, speed)
             if outcome == _INTERRUPTED:
                 return
             skip_current = outcome == _SPEED_CHANGED
             if skip_current:
                 continue
-            direction = self._on_route_end(direction, cumulative, idx)
+            direction = self._on_route_end(direction, sampler, idx)
             if direction is None:
                 return
 
-    def _resume_index(self, cumulative, direction, skip_current):
-        """把 travelled_m 換算成這份內插結果裡要從哪個索引開始走。
+    def _resume_index(self, sampler, direction, skip_current):
+        """把 travelled_m 換算成這一輪要從哪個索引開始走。
 
         skip_current 在「移動中途改速度」時為真：travelled_m 對應的位置剛剛才注入
         過，要從行進方向上的下一個點開始，否則會在原地多停一秒。索引可能因此超出
         範圍（剛好停在端點），此時 _walk_points() 一步都不走，直接當作抵達端點。
         """
-        idx = index_at_distance(cumulative, self.travelled_m)
+        idx = sampler.index_at(self.travelled_m)
         if not skip_current:
             return idx
-        if direction == 1 and cumulative[idx] <= self.travelled_m + _SAME_POSITION_M:
+        position = sampler.distance_at(idx)
+        if direction == 1 and position <= self.travelled_m + _SAME_POSITION_M:
             return idx + 1
-        if direction == -1 and cumulative[idx] >= self.travelled_m - _SAME_POSITION_M:
+        if direction == -1 and position >= self.travelled_m - _SAME_POSITION_M:
             return idx - 1
         return idx
 
-    async def _walk_points(self, sim, points, cumulative, start, direction, speed):
+    async def _walk_points(self, sim, sampler, start, direction, speed):
         """從 start 開始每 STEP_INTERVAL_S 秒注入一點，回傳 (結果, 最後停留的索引)。
 
         每一步的時間點是從這一輪開始時算好的固定刻度，會扣掉 sim.set() 本身的耗時；
         單純在 set() 之後 sleep 一秒的話，實際間隔是「一秒 + 往返時間」，長路線跑
         下來會越來越落後設定的速度。某一步卡得比一個間隔還久時就從當下重新起算，
         不連續補送落後的那幾步（那等於在地圖上瞬間跳一段）。
+
+        等下一個刻度的期間 pending_action 一被改掉就會提早醒來，「停止」立即生效。
         """
         action_name = _action_for(direction)
         suffix = "" if direction == 1 else "（返回中）"
-        total = len(points)
-        idx = min(max(start, 0), total - 1)
+        last = sampler.last_index
+        total = last + 1
+        idx = min(max(start, 0), last)
         indices = range(start, total) if direction == 1 else range(start, -1, -1)
         next_tick = self._now()
         for i in indices:
@@ -258,20 +280,20 @@ class GPSSession(QObject):
                 return _INTERRUPTED, idx
             if self._speed_provider() != speed:
                 return _SPEED_CHANGED, idx
-            lat, lon = points[i]
+            lat, lon = sampler.point(i)
             await sim.set(lat, lon)
             self.last_position = (lat, lon)
             self.position_changed.emit(lat, lon)
             idx = i
-            self.travelled_m = cumulative[i]
+            self.travelled_m = sampler.distance_at(i)
             frac = (i + 1) / total if direction == 1 else i / total
             self.progress_value.emit(frac)
             self.progress_label.emit(f"{frac*100:.1f}%  {lat:.6f}, {lon:.6f}{suffix}")
             next_tick = max(next_tick + STEP_INTERVAL_S, self._now())
-            await self._sleep_until(next_tick)
+            await self._sleep_until_or_action_change(next_tick, action_name)
         return _ARRIVED, idx
 
-    def _on_route_end(self, direction, cumulative, idx):
+    def _on_route_end(self, direction, sampler, idx):
         """抵達端點：回傳下一輪要走的方向，不再繼續走時回傳 None。
 
         走到端點才即時讀取循環開關/走法，而不是在一開始就快取，這樣使用者
@@ -289,15 +311,15 @@ class GPSSession(QObject):
             self.pending_action = "pause"
             return None
 
-        last = len(cumulative) - 1
+        last = sampler.last_index
         if self._loop_style_provider() == "circuit":
             # 迴圈模式：方向不變，瞬移回路線另一端繼續走。
             if direction == 1:
                 self.log.emit("迴圈模式：已抵達終點，返回起點繼續前進")
-                self.travelled_m = cumulative[0]
+                self.travelled_m = sampler.distance_at(0)
             else:
                 self.log.emit("迴圈模式：已回到起點，返回終點繼續前進")
-                self.travelled_m = cumulative[last]
+                self.travelled_m = sampler.distance_at(last)
             return direction
 
         if direction == 1:
@@ -310,8 +332,43 @@ class GPSSession(QObject):
         self.pending_action = _action_for(direction)
         self.direction = self.pending_action
         self.direction_changed.emit()
-        self.travelled_m = cumulative[max(0, min(idx + direction, last))]
+        self.travelled_m = sampler.distance_at(max(0, min(idx + direction, last)))
         return direction
+
+    # ── 等待 pending_action 改變 ────────────────────
+    def _current_action_event(self):
+        loop = asyncio.get_running_loop()
+        if self._action_event is None or self._action_event_loop is not loop:
+            self._action_event = asyncio.Event()
+            self._action_event_loop = loop
+        return self._action_event
+
+    async def _wait_for_action_change(self, action):
+        """一直等到 pending_action 不再是 action（待機時不必輪詢）。"""
+        event = self._current_action_event()
+        # clear 與檢查之間沒有 await，不會漏掉這之間發生的變動。
+        while self.pending_action == action:
+            event.clear()
+            await event.wait()
+
+    async def _sleep_until_or_action_change(self, deadline, action):
+        """等到 deadline；pending_action 在這之前不再是 action 就提早醒來。
+
+        時間本身仍交給 _sleep_until()（測試會換成假的時鐘），這裡只是讓它跟
+        「動作被改掉」賽跑，誰先完成就回來，另一個取消掉。
+        """
+        if self.pending_action != action:
+            return
+        sleeper = asyncio.ensure_future(self._sleep_until(deadline))
+        waker = asyncio.ensure_future(self._wait_for_action_change(action))
+        done, pending = await asyncio.wait(
+            {sleeper, waker}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            task.result()  # 讓 _sleep_until() 裡的例外照常往外丟
 
     # ── 時間掛勾（測試會換成假的時鐘，不必真的一秒一秒等） ────────────────────
     def _now(self):

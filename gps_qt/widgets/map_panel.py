@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from .. import paths, theme
 from ..geocode import Geocoder
 from ..map_bridge import MapBridge, bounds_payload, favorites_payload, route_payload
+from ..tiles import AUTO_TILE, CUSTOM_TILE, TILE_SOURCES, resolve_tile
 from .route_planner import RoutePlanner
 
 MAP_HTML = paths.resource_path("web", "map.html")
@@ -31,29 +32,6 @@ MAP_MIN_HEIGHT = 320
 ROW_SPACING = 8
 SEARCH_BOX_MIN_WIDTH = 180
 MENU_ITEM_MAX_CHARS = 70
-
-AUTO_TILE = "auto"
-CUSTOM_TILE = "custom"
-
-# (設定值, 下拉選單文字, URL 樣板, 版權標示)
-# Leaflet 原生支援 {s}（子網域）與 {r}（高解析度後綴），不需要自己展開。
-TILE_SOURCES = [
-    (AUTO_TILE, "圖磚：自動（跟隨主題）", "", ""),
-    ("osm", "圖磚：OpenStreetMap",
-     "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-     "&copy; OpenStreetMap contributors"),
-    ("positron", "圖磚：CartoDB Positron（淺）",
-     "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
-     "&copy; OpenStreetMap contributors &copy; CARTO"),
-    ("dark", "圖磚：CartoDB Dark Matter（深）",
-     "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-     "&copy; OpenStreetMap contributors &copy; CARTO"),
-    (CUSTOM_TILE, "圖磚：自訂 URL…", "", ""),
-]
-TILE_BY_KEY = {entry[0]: entry for entry in TILE_SOURCES}
-
-# 「自動」時依主題挑一組對比合適的圖磚：深色主題配深色圖磚，標記才不會刺眼。
-THEME_TILE = {"dark": "dark", "light": "positron"}
 
 
 def _read_qt_resource(path):
@@ -293,7 +271,7 @@ class MapPanel(QFrame):
 
     def _push_tile(self):
         if self._ready:
-            url, attribution = self._current_tile()
+            url, attribution = resolve_tile(self._settings, self._theme_name)
             self.bridge.tile_changed.emit(url, attribution)
 
     def _push_view(self):
@@ -318,18 +296,6 @@ class MapPanel(QFrame):
         self._push_locked()
 
     # ── 工具列事件 ────────────────────
-    def _current_tile(self):
-        key = self._settings.get("tile_source", AUTO_TILE)
-        if key == AUTO_TILE:
-            key = THEME_TILE.get(self._theme_name, "osm")
-        if key == CUSTOM_TILE:
-            url = self._settings.get("custom_tile_url", "")
-            if url:
-                return url, self._settings.get("custom_attribution", "")
-            key = "osm"
-        entry = TILE_BY_KEY.get(key) or TILE_BY_KEY["osm"]
-        return entry[2], entry[3]
-
     def _select_tile_in_combo(self, key):
         index = self.tile_combo.findData(key)
         self.tile_combo.blockSignals(True)
@@ -354,7 +320,7 @@ class MapPanel(QFrame):
         if not ok or not url.strip():
             return False
         attribution, ok = QInputDialog.getText(
-            self, "自訂圖磚", "請輸入版權標示（可留空）：",
+            self, "自訂圖磚", "請輸入版權標示（純文字，可留空）：",
             text=self._settings.get("custom_attribution", ""),
         )
         if not ok:

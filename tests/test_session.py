@@ -46,6 +46,9 @@ class FakeSim:
         if self.on_set:
             self.on_set(len(self.calls))
 
+    async def clear(self):
+        self.cleared = True
+
     @property
     def positions(self):
         return [(lat, lon) for _t, lat, lon in self.calls]
@@ -337,3 +340,125 @@ def test_route_emptied_while_looping_stops_with_a_message():
     # Assert
     assert harness.session.pending_action == "pause"
     assert any("少於 2 個點" in line for line in logs)
+
+
+def test_forward_and_reverse_walks_report_progress_from_end_to_end():
+    # Arrange
+    harness = Harness()
+    values = []
+    harness.session.progress_value.connect(values.append)
+
+    # Act：先走到終點，再走回起點
+    harness.walk(1, FakeSim(harness.clock))
+    forward = list(values)
+    values.clear()
+    harness.walk(-1, FakeSim(harness.clock))
+
+    # Assert：往終點遞增到 100%，往起點遞減到 0%
+    assert forward == sorted(forward)
+    assert forward[-1] == pytest.approx(1.0)
+    assert values == sorted(values, reverse=True)
+    assert values[-1] == pytest.approx(0.0)
+
+
+class _NeverWakingClock(FakeClock):
+    """等下一步的時間永遠不會到：只有 pending_action 被改掉才能讓迴圈醒來。"""
+
+    async def sleep_until(self, deadline):
+        await asyncio.Event().wait()
+
+
+def test_stop_takes_effect_without_waiting_for_the_next_step():
+    """按「停止」要立刻生效，不能等到下一步的刻度（最多一秒）才停。"""
+    # Arrange：注入第一點後，在等下一步的期間按下停止
+    harness = Harness()
+    harness.session._sleep_until = _NeverWakingClock().sleep_until
+
+    def on_set(_n):
+        asyncio.get_running_loop().call_soon(harness.session.stop)
+    sim = FakeSim(harness.clock, on_set=on_set)
+    harness.session.pending_action = "forward"
+
+    # Act：舊寫法會一直睡到刻度到了才檢查，這裡的刻度永遠不會到
+    async def scenario():
+        await asyncio.wait_for(harness.session._walk_route(sim, 1), timeout=1.0)
+    asyncio.run(scenario())
+
+    # Assert
+    assert len(sim.calls) == 1
+    assert harness.session.pending_action == "pause"
+
+
+def test_idle_session_wakes_up_immediately_when_restoring_real_location(monkeypatch):
+    """待機中（已連線、pause）按「恢復真實定位」要立刻斷線，不是等下一輪輪詢。"""
+    # Arrange
+    harness = Harness()
+    sim = FakeSim(harness.clock)
+    _patch_device(monkeypatch, sim)
+
+    async def scenario():
+        task = asyncio.ensure_future(harness.session._session_main())
+        while not harness.session.session_active:
+            await asyncio.sleep(0)
+        # Act：此時 _session_main() 已在待機分支等著
+        harness.session.restore_real_location()
+        await asyncio.wait_for(task, timeout=0.15)
+    asyncio.run(scenario())
+
+    # Assert
+    assert sim.cleared is True
+    assert harness.session.session_active is False
+
+
+def test_long_slow_route_starts_without_expanding_every_step(monkeypatch):
+    """10 公里以 0.1 km/h 走約 36 萬步：每一輪與每次改速度都不能先把整條路線
+    展開成內插點再算累積距離（全在 UI 執行緒上，會卡住好一陣子）。"""
+    import gps_qt.geo as geo_module
+
+    calls = []
+    real_haversine = geo_module.haversine
+
+    def counting_haversine(*args):
+        calls.append(1)
+        return real_haversine(*args)
+    monkeypatch.setattr(geo_module, "haversine", counting_haversine)
+    route = [[24.0, 120.0, "起點"], [24.09, 120.0, "終點"]]  # 約 10 公里
+    harness = Harness(route=route, speed_ms=0.1 / 3.6)
+    sim = FakeSim(harness.clock, on_set=_stop_after(harness, 3))
+
+    # Act
+    harness.walk(1, sim)
+
+    # Assert：只走了三步，計算量只跟原本的路線點數有關
+    assert len(sim.calls) == 3
+    assert len(calls) < 100
+    assert _step_lengths(sim.positions) == pytest.approx([0.1 / 3.6] * 2, rel=0.01)
+
+
+@pytest.mark.parametrize("frozen", [True, False])
+def test_tunneld_failure_hint_matches_how_the_app_was_started(monkeypatch, frozen):
+    """打包版的使用者電腦上沒有 Python，不能叫他跑 python -m pymobiledevice3。"""
+    import gps_qt.paths as paths_module
+    import pymobiledevice3.tunneld.api as tunneld_api
+
+    from gps_qt.tunneld import TUNNELD_EXE_NAME
+
+    async def refused():
+        raise ConnectionRefusedError("無法連線")
+    monkeypatch.setattr(tunneld_api, "get_tunneld_devices", refused)
+    monkeypatch.setattr(paths_module, "is_frozen", lambda: frozen)
+    harness = Harness()
+    logs = []
+    harness.session.log.connect(logs.append)
+
+    # Act
+    asyncio.run(harness.session._session_main())
+
+    # Assert
+    hint = "\n".join(line for line in logs if "tunneld 連線失敗" not in line)
+    if frozen:
+        assert TUNNELD_EXE_NAME in hint
+        assert "重新開啟 PinDrift" in hint
+        assert "python" not in hint
+    else:
+        assert "python -m pymobiledevice3 remote tunneld" in hint

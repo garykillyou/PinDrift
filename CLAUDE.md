@@ -65,17 +65,30 @@ python -m pymobiledevice3 remote tunneld
 
 # 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定欄位的型別／範圍檢查、
 # 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
-# GPSSession 的續走／改速度／循環走法／時間間隔／例外回報、KML 匯入、網路請求的節流與過期過濾、
-# 移動中鎖定路線表格與清空確認、固定座標的確定通知、記錄檔與例外攔截）
+# GPSSession 的續走／改速度／循環走法／時間間隔／停止立即生效／例外回報／tunneld 提示、KML 匯入、
+# 網路請求的節流與過期過濾、移動中鎖定路線表格與清空確認、固定座標的確定通知、記錄檔與例外攔截、
+# 圖磚選擇與自訂版權標示的 escape、模擬中關閉視窗的恢復流程）
 pip install -r requirements-dev.txt
 python -m pytest
 
 # 打包成可直接交付的資料夾（產出 dist/PinDrift/，約 510 MB）
 # 需要 libssl-3-x64.dll／libcrypto-3-x64.dll：有 Git for Windows 會自動找到，
 # 否則設 PINDRIFT_OPENSSL_DIR 指向 DLL 所在資料夾（見下方打包章節）
-pip install -r requirements-build.txt
+pip install -r requirements-lock.txt
 python -m PyInstaller --noconfirm --clean PinDrift.spec
+
+# 升級套件並實測過之後，依目前環境重新產生打包用的固定版本檔
+python scripts/lock_requirements.py
 ```
+
+**相依套件分兩層**：`requirements*.txt` 寫版本範圍（下限 + 實測版本所在的主／次版號上限——
+pymobiledevice3 改版常搬動模組路徑，而 `session.py` 直接 import 它的內部模組；PySide6／
+qt-material 的次版號會改樣式表與 WebEngine 行為；qasync 還在 0.x），`requirements-lock.txt` 則是
+[scripts/lock_requirements.py](scripts/lock_requirements.py) 依目前環境產生的固定版本（含遞移相依，
+只收 `requirements.txt` + `requirements-build.txt` 會帶進來的套件，不是 `pip freeze` 整個環境），
+**打包（`build.bat`）一律裝鎖定檔**，確保打出來的 exe 用的就是實測過的版本。鎖定檔的環境標記依
+產生時的平台評估，只適用 Windows。放寬上限或升級套件後要實測、重新產生鎖定檔，並更新
+`requirements.txt` 開頭註解裡的實測版本。
 
 一般情況下不需要手動跑 tunneld：App 啟動後 [MainWindow._ensure_tunneld()](gps_qt/widgets/main_window.py)
 會呼叫 [tunneld.py](gps_qt/tunneld.py) 偵測 `127.0.0.1:49151` 是否已經有人在聽，沒有的話用
@@ -85,9 +98,13 @@ python -m PyInstaller --noconfirm --clean PinDrift.spec
 tunneld 的主控台輸出），已凍結時跑同一個資料夾裡的 `PinDrift-tunneld.exe`——打包後使用者的
 機器上沒有 Python，`python -m pymobiledevice3 ...` 那條路整條斷掉。
 [run.bat](run.bat) 因此只剩「用 `pythonw` 開 App」一件事。
+按「開始移動」時連不上 tunneld 的提示同樣分兩條路（`tunneld.manual_start_hint()`）：未凍結時叫使用者
+跑 `python -m pymobiledevice3 remote tunneld`，打包版改成「重新開啟 PinDrift 讓它自動啟動，或以系統
+管理員身分執行同資料夾的 `PinDrift-tunneld.exe`」。任何給使用者看的指令都要想一下打包版有沒有 Python。
 
 測試以不需要 Qt 事件迴圈的邏輯為主（[tests/](tests)）；少數 widget（`RoutePanel`、`PinPanel`）以
-offscreen 平台建立來測，地圖頁面與 `MainWindow` 沒有自動化測試。**需要 Q*Application 的測試一律用
+offscreen 平台建立來測，地圖頁面與 `MainWindow` 沒有自動化測試（`MainWindow` 需要 QtWebEngine；
+要測它的行為就像 `CloseGuard` 那樣抽成只用 QtCore 的小類別）。**需要 Q*Application 的測試一律用
 [conftest.py](conftest.py) 的 `qapp` fixture**：一個行程只能有一個，而且若先建了 `QCoreApplication`，
 之後就建不出 widget 需要的 `QApplication`。
 `GPSSession` 只用到 QtCore 的 signal，可以直接 `asyncio.run(session._walk_route(...))` 測；
@@ -101,13 +118,16 @@ offscreen 平台建立來測，地圖頁面與 `MainWindow` 沒有自動化測�
 ```
 PinDrift/
 ├── run.bat                # 啟動捷徑：用 pythonw 開 App（tunneld 交給 tunneld.py）
-├── build.bat              # 打包捷徑：裝相依 + 跑 PyInstaller
+├── build.bat              # 打包捷徑：裝 requirements-lock.txt + 跑 PyInstaller
 ├── PinDrift.spec          # PyInstaller 設定（onedir，兩個執行檔共用 _internal；另帶 Qt 用的 OpenSSL DLL）
 ├── app_entry.py           # 打包用的主程式進入點（PyInstaller 只吃腳本不吃模組）
 ├── tunneld_entry.py       # 打包用的 tunneld 進入點（console 模式的第二個執行檔）
-├── requirements.txt       # 執行 App 需要的相依套件
+├── requirements.txt       # 執行 App 需要的相依套件（版本範圍：下限 + 上限）
 ├── requirements-dev.txt   # 測試相依（pytest）
 ├── requirements-build.txt # 打包相依（pyinstaller）
+├── requirements-lock.txt  # 打包用的固定版本（實測版本 + 遞移相依，由下面的腳本產生）
+├── scripts/
+│   └── lock_requirements.py  # 依目前環境產生 requirements-lock.txt
 ├── .gitattributes         # vendored 的 Leaflet 檔案排除行尾轉換（見下方地圖面板）
 ├── LICENSE                # MIT 授權條款全文
 ├── conftest.py            # 讓 pytest 把根目錄加進 sys.path；共用的 qapp fixture（offscreen）
@@ -118,13 +138,15 @@ PinDrift/
     ├── applog.py            # 記錄檔 pindrift.log、日誌時間戳記、未處理例外的攔截
     ├── tunneld.py           # tunneld 偵測 + 提權啟動；也是 tunneld 子行程的本體
     ├── theme.py             # qt-material 主題套用、字級覆寫、danger/success 語意色
-    ├── geo.py               # haversine()、interpolate_points()、douglas_peucker()、
-    │                        # simplify_route()（保留備註點的抽稀）、
-    │                        # cumulative_distances()／index_at_distance()（進度換算）、
-    │                        # route_length()、is_valid_latitude()／is_valid_longitude()
+    ├── geo.py               # haversine()、RouteSampler（依弧長等距切步、按需算單點）、
+    │                        # douglas_peucker()、simplify_route()（保留備註點的抽稀）、
+    │                        # cumulative_distances()、route_length()、
+    │                        # is_valid_latitude()／is_valid_longitude()
     ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
+    ├── close_guard.py       # CloseGuard：模擬中關閉視窗時先恢復真實定位再關
+    ├── tiles.py             # 圖磚來源清單 + resolve_tile()（自訂版權標示在這裡 escape）
     ├── models.py            # RouteTableModel + DeleteButtonDelegate（路線表格虛擬化）
     ├── map_bridge.py        # QWebChannel 契約（MapBridge）+ payload 序列化純函式
     ├── netclient.py         # SingleFlightClient：節流 + 只保留最後一次請求（geocode/routing 共用）
@@ -145,7 +167,8 @@ PinDrift/
 ### 執行流程（連接 iPhone 的關鍵鏈路，長連線架構）
 1. `tunneld` 必須以系統管理員權限先啟動（App 開起來時 `_ensure_tunneld()` 會自動處理，
    或手動跑 `python -m pymobiledevice3 remote tunneld`），建立 iOS 26 的 RemoteXPC 通道。
-2. 按「開始移動」時，[session.py](gps_qt/session.py) 的 `GPSSession._session_main()` 用 `asyncio.ensure_future()` 建立一個常駐 task，`async with DvtProvider(rsd) as dvt, LocationSimulation(dvt) as sim:` 開一次連線後就常駐在 while 迴圈裡；後續按「停止」都**不會**重建 task 或重新連線，只是改變 `self.pending_action` 這個共享狀態（`"forward" | "reverse" | "pause" | "disconnect"`），由 while 迴圈讀取並分派動作。「往起點／往終點」（切換方向）本身**不會**碰觸 `pending_action`，只改變下面提到的 `self.direction`。
+2. 按「開始移動」時，[session.py](gps_qt/session.py) 的 `GPSSession._session_main()` 用 `asyncio.ensure_future()` 建立一個常駐 task，`async with DvtProvider(rsd) as dvt, LocationSimulation(dvt) as sim:` 開一次連線後就常駐在 while 迴圈裡；後續按「停止」都**不會**重建 task 或重新連線，只是改變 `self.pending_action` 這個共享狀態（`"forward" | "reverse" | "pause" | "disconnect"`），由 while 迴圈讀取並分派動作。`pending_action` 是 property，**一被改掉就喚醒等待中的迴圈**
+（見下方「動作改變立即喚醒」），「停止」「恢復真實定位」不必等下一步的刻度或下一輪輪詢。「往起點／往終點」（切換方向）本身**不會**碰觸 `pending_action`，只改變下面提到的 `self.direction`。
 3. 直到 `pending_action == "disconnect"`（使用者按「恢復真實定位」）才 `break` 出迴圈、呼叫 `sim.clear()` 並讓 `async with` 關閉連線——恢復真實 GPS 只會在明確斷線時發生，單純停止都仍保持模擬連線在目前座標。
 4. 座標注入本身是 `sim.set(lat, lon)`，呼叫位置在 `_walk_route()` / `_walk_pin()` 這兩個由 `_session_main()` 依 `pending_action` 呼叫的協程裡。
 5. `_session_main()` 的 `try/finally` **包住整個函式主體**，不是只包 `async with` 那一段（修過的 bug）：
@@ -165,15 +188,20 @@ PinDrift/
   純粹只是記錄「下次按開始移動要往哪走」；`GPSSession.start()`（由「開始移動」按鈕觸發）才會把
   `pending_action` 設成目前的 `self.direction` 並真正開始移動。UI 在移動中（`pending_action` 為
   `forward`/`reverse`）或斷線中（`disconnect`）會停用切換方向按鈕，要先「停止」才能再切方向。
-  `interpolate_points()` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經 `speed_ms()` 換算成
-  m/s）把路線切成每秒一個內插點。**切法是把整條路線當成一條線依弧長等距取樣，不是逐段切**（修過的
-  bug）：逐段切時比一步短的段也會佔滿一秒、1.9 步長的段被 `int()` 捨成一步，路線點越密實際速度與
-  預計時間偏得越多。步數取「總長 / 步長」四捨五入後平均分配，代價是轉角會被截掉最多約半步。**進度記在 `travelled_m`（已走到路線的第幾公尺），不是「第幾個內插
+  `geo.RouteSampler(route, step_m)` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經
+  `speed_ms()` 換算成 m/s，乘上 `STEP_INTERVAL_S` 就是 `step_m`）把路線切成每秒一步。**切法是把整條路線
+  當成一條線依弧長等距取樣，不是逐段切**（修過的 bug）：逐段切時比一步短的段也會佔滿一秒、1.9 步長的段被 `int()` 捨成一步，路線點越密實際速度與
+  預計時間偏得越多。步數取「總長 / 步長」四捨五入後平均分配，代價是轉角會被截掉最多約半步。
+  **`RouteSampler` 不會一次展開整條路線**（修過的效能問題）：舊的 `interpolate_points()` 一次產生所有
+  內插點，每一圈與每次改速度都在 UI 執行緒上重算，10 公里以 0.1 km/h（速度下限）走是約 36 萬點。現在建立
+  時只算原本路線點的累積距離，`point(k)` 用二分搜尋找出第 k 步所在的線段即時內插；索引 0 是起點、
+  `last_index` 是終點，點數是 `last_index + 1`。**不要為了方便又把所有點展開成串列**。**進度記在 `travelled_m`（已走到路線的第幾公尺），不是「第幾個內插
   點」**（修過的 bug）：內插點的數量由速度決定，停止期間改過速度後同一個索引對到的位置完全不同，而
   `min(idx, total - 1)` 這種夾取會把超出範圍的索引直接夾到最後一點——實測 2.2 公里的路線以 5 km/h 走到
-  中途是第 794 個點（共 1589 個），改成 60 km/h 後只剩 134 個點，再按「開始移動」人就瞬移到終點。距離
-  與速度無關，所以 `_walk_route()` 的每一輪都重算 `geo.cumulative_distances()`，再用
-  `geo.index_at_distance()`（二分搜尋取最接近者）把 `travelled_m` 換算成這份內插結果裡的索引；中斷
+  中途是第 794 個點（共 1589 個），改成 60 km/h 後只剩 134 個點，再按「開始移動」人就瞬移到終點。
+  `travelled_m` 是**沿原路線的弧長**（`RouteSampler.distance_at(k)`），與步長無關，所以 `_walk_route()`
+  的每一輪都依目前速度重建 `RouteSampler`，再用 `index_at()`（取最接近的一步）把 `travelled_m` 換算成
+  這一輪的索引；中斷
   （停止／斷線）時會停在原地，之後從該處繼續。整條路線被換掉時則由 `GPSSession.reset_progress()` 歸零
   ——舊的已走距離對新路線沒有意義。觸發點是 `RouteTableModel` 的 `modelReset`，它只在 `set_route()`／
   `clear()` 發出，剛好對應「載入最愛」「路徑規劃算完」「簡化目前路線」「清空座標點」四個整條替換的入口，不會被單點
@@ -187,6 +215,13 @@ PinDrift/
     會扣掉 `sim.set()` 本身的往返耗時（修過的 bug）：舊寫法是 `set()` 之後固定 `sleep(1.0)`，實際間隔
     是「一秒 + 往返時間」，長路線會越走越慢。某一步卡得比一個間隔還久時用 `max(..., _now())` 從當下
     重新起算，不連續補送落後的步數（那等於在地圖上瞬間跳一段）。
+  - **動作改變立即喚醒**（修過的 bug：按「停止」最多要等一秒、待機時每 0.2 秒輪詢一次）：
+    `pending_action` 的 setter 會 `set()` 一個 `asyncio.Event`。`_walk_points()` 等下一個刻度時用
+    `_sleep_until_or_action_change()` 讓 `_sleep_until()` 跟「動作被改掉」賽跑，`_session_main()`
+    的待機分支則用 `_wait_for_action_change()` 直接等到動作改變。時間仍只經過 `_now()`／`_sleep_until()`
+    這兩個掛勾，測試換成假時鐘的方式不變。Event 會綁定建立時的事件迴圈，所以由
+    `_current_action_event()` 在第一次等待時才於當下的迴圈建立（測試每次 `asyncio.run()` 都是新迴圈）；
+    `clear()` 之後立刻檢查條件、中間沒有 `await`，不會漏掉 `sim.set()` 往返期間發生的變動。
   循環模式不是在進入 `_walk_route()` 時快取的：**每次抵達端點才即時讀取** `loop_provider()` 與
   `loop_style_provider()`，因此使用者中途勾選／切換走法會在下一次抵達端點時生效。循環有兩種走法
   （[route_panel.py](gps_qt/widgets/route_panel.py) 的 `loop_style_combo`，僅在勾選循環模式時才啟用）：
@@ -194,9 +229,9 @@ PinDrift/
     `pending_action` 與 `self.direction`（記錄用），並 emit `direction_changed`，讓按鈕文字跟著改成
     新的方向。
   - **迴圈（circuit）**：方向不變，索引直接瞬移回路線另一端（往終點走完就跳回 `0`，往起點走完就跳
-    回 `total - 1`，`travelled_m` 一併更新成該點的累積距離）再繼續走，模擬繞圈；不改 `direction`／
+    回 `last_index`，`travelled_m` 一併更新成該點的弧長位置）再繼續走，模擬繞圈；不改 `direction`／
     `self.direction`，也不 emit `direction_changed`，因為方向本身沒有變。
-- **固定定位模式（pin）**：`_walk_pin(sim)` 呼叫一次 `sim.set(lat, lon)` 後立刻把 `pending_action` 設回 `"pause"`，讓外層 while 迴圈進入 `await asyncio.sleep(0.2)` 的閒置分支，藉此在同一條長連線上「保持」定位，直到使用者按「停止」（其實已經是 pause 狀態，UI 只更新按鈕）或「恢復真實定位」。
+- **固定定位模式（pin）**：`_walk_pin(sim)` 呼叫一次 `sim.set(lat, lon)` 後立刻把 `pending_action` 設回 `"pause"`，讓外層 while 迴圈進入 `_wait_for_action_change()` 的閒置分支（不輪詢，動作一改就醒），藉此在同一條長連線上「保持」定位，直到使用者按「停止」（其實已經是 pause 狀態，UI 只更新按鈕）或「恢復真實定位」。
 
 ### 地圖面板：QWebEngineView + Leaflet + QWebChannel
 右欄以地圖為主體（[map_panel.py](gps_qt/widgets/map_panel.py)），座標面板在下方可整個收合。
@@ -260,9 +295,17 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   累加；超過 `TRAIL_MAX_POINTS`(3000) 就每兩點抽一點，循環模式跑整夜也不會累積出巨大的 polyline。
 - **跟隨**：使用者手動拖動地圖（`dragstart`）會自動關閉跟隨並回報 Python 同步核取方塊；
   `panTo()` 不觸發 `dragstart`，所以程式自己的平移不會誤關。
-- **圖磚**：`TILE_SOURCES` 內建 OSM／CartoDB Positron／Dark Matter／自訂 URL，預設 `"auto"`
-  跟著主題換（深色配 Dark Matter、淺色配 Positron）；使用者手動選過就固定下來不再跟著主題跑。
-  Leaflet 原生支援 `{s}`／`{r}`，不需要自己展開。**這些公用圖磚僅供輕量使用且必須保留 attribution。**
+- **圖磚**：[tiles.py](gps_qt/tiles.py) 的 `TILE_SOURCES` 內建 OSM／CartoDB Positron／Dark Matter／
+  自訂 URL，預設 `"auto"` 跟著主題換（深色配 Dark Matter、淺色配 Positron）；使用者手動選過就固定下來
+  不再跟著主題跑。目前該用哪一組由純函式 `resolve_tile(map_settings, theme_name)` 決定（不相依
+  QtWebEngine，可單獨測試），`MapPanel._push_tile()` 再經 `bridge.tile_changed` 送到 `map.js` 的
+  `setTile()`。Leaflet 原生支援 `{s}`／`{r}`，不需要自己展開。**這些公用圖磚僅供輕量使用且必須保留
+  attribution。**
+  - **Leaflet 會把 attribution 當 HTML 插進頁面**，而這個頁面能呼叫 QWebChannel bridge，所以
+    **自訂圖磚的版權標示（使用者輸入的純文字）在 `resolve_tile()` 裡 `html.escape()` 後才送出**
+    （修過的安全問題）；設定檔裡存的仍是原文，輸入框才顯示得回來。內建清單的版權標示是寫死的 HTML
+    （`&copy;` 實體），原樣送出，不能一起 escape。新增任何會把使用者輸入送進頁面當 HTML 用的欄位，
+    都要在 Python 端 escape。
 - **地名搜尋刻意由 Python 端發送**（[geocode.py](gps_qt/geocode.py) 用 `QNetworkAccessManager`）：
   Nominatim 政策要求可識別的 User-Agent 且每秒最多 1 次，在 QWebEngine 裡 `fetch()` 帶的是瀏覽器
   UA，改不掉也不合規。route 模式搜尋只帶視野過去，**不自動加點**；結果超過一筆會跳 `QMenu` 讓使用者挑。
@@ -279,7 +322,7 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   被動過。之後再 vendor 任何第三方檔案都要記得加進這條規則。
 
 ### 路徑規劃：Valhalla + Douglas-Peucker
-`interpolate_points()` 在兩點之間走的是**直線**；要沿實際道路走就必須有路網資料，
+`RouteSampler` 在兩點之間走的是**直線**；要沿實際道路走就必須有路網資料，
 這由 [routing.py](gps_qt/routing.py)（查詢）與 [route_planner.py](gps_qt/widgets/route_planner.py)（互動）負責。
 
 - **服務是 Valhalla 的 FOSSGIS 公用實例**，不需要 API 金鑰，支援 `pedestrian`／`bicycle`／`auto`
@@ -356,6 +399,14 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   對話框會搶焦點、打斷使用者正在做的事（例如全螢幕遊戲），系統匣提示不會 activate 視窗。
   `_start()` 會先 `tray_icon.hide()` 清掉上一趟殘留的通知（`hide()` 會讓還在顯示中的 balloon 一併消失），
   否則使用者會把舊的 toast 誤認成這趟剛跳出來的。
+- **模擬中關閉視窗要先恢復真實定位**（修過的 bug）：直接關掉的話 qasync 事件迴圈一停，`GPSSession`
+  的 task 被整個銷毀、`sim.clear()` 從來沒被呼叫，只能靠連線中斷時 iPhone 自己恢復。
+  [close_guard.py](gps_qt/close_guard.py) 的 `CloseGuard.allow_close()` 由 `closeEvent()` 最先呼叫：
+  `session_active` 時先跳確認（「恢復真實定位並關閉」／「取消」），確定後 `event.ignore()`、呼叫
+  `restore_real_location()`（**移動中也直接斷線**，不像按鈕那樣要求先按「停止」），等 `session_ended`
+  再用 `QTimer.singleShot(0, close)` 關一次——延一輪是讓 `_session_main()` 的 `finally` 先跑完。
+  `sim.clear()` 卡住（USB 已拔）時以 `RESTORE_TIMEOUT_MS`(5000) 為限直接關閉，並寫進記錄檔；
+  恢復中重複按關閉不會再問。存檔只在真正關閉的那一次 `closeEvent()` 做。
 
 ### 主題系統：qt-material，一個重要陷阱
 - [theme.py](gps_qt/theme.py) 的 `apply()` 呼叫 `qt_material.apply_stylesheet(app, theme=..., invert_secondary=...)`
@@ -514,6 +565,10 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 [PinDrift.spec](PinDrift.spec) 產出 `dist/PinDrift/` 這一個可以整包搬走的資料夾（約 510 MB），
 裡面有兩個共用同一份 `_internal` 的執行檔：`PinDrift.exe`（視窗模式、一般權限）與
 `PinDrift-tunneld.exe`（主控台模式、由前者提權啟動）。
+
+- **打包一律裝 `requirements-lock.txt`**（`build.bat` 就是這樣做的，見上方「相依套件分兩層」）：
+  只照 `requirements.txt` 的範圍重新安裝，可能抓到範圍內還沒實測過的新版，打包出來才發現
+  pymobiledevice3 的模組路徑變了，那時使用者手上的 exe 一按「開始移動」就「匯入失敗」。
 
 - **刻意用 onedir 而不是 onefile**：QtWebEngine 的 `QtWebEngineProcess.exe` 是獨立子行程，
   還要找得到 ICU 資料與 locales，onefile 每次啟動都解壓到暫存目錄，既慢又常出現子行程

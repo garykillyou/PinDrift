@@ -76,6 +76,20 @@ def launch_elevated():
     return False, f"啟動 tunneld 失敗（ShellExecute 回傳 {result}）。"
 
 
+def manual_start_hint():
+    """連不上 tunneld 時，告訴使用者怎麼自己把它開起來。
+
+    打包版的使用者電腦上沒有 Python，`python -m pymobiledevice3 ...` 那條路不存在，
+    要改指向同一個資料夾的 tunneld 執行檔（或重開 App 讓 ensure_running() 再提權一次）。
+    """
+    if paths.is_frozen():
+        return (
+            "請重新開啟 PinDrift 讓它自動啟動 tunneld（會跳出系統管理員授權），"
+            f"或以系統管理員身分執行同一個資料夾裡的 {TUNNELD_EXE_NAME}"
+        )
+    return "請先以系統管理員執行：python -m pymobiledevice3 remote tunneld"
+
+
 def ensure_running():
     """確保 tunneld 在執行，回傳要寫進執行日誌的訊息清單。"""
     if is_running():

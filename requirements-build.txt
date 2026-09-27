@@ -1,2 +1,3 @@
-# 打包成執行檔用的相依（執行 App 本身不需要）
-pyinstaller>=6.16
+# 打包成執行檔用的相依（執行 App 本身不需要）。實測版本：pyinstaller 6.22.3
+# 實際打包時 build.bat 裝的是 requirements-lock.txt 裡的固定版本。
+pyinstaller>=6.16,<7

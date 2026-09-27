@@ -180,7 +180,7 @@ def load_saved_route(settings):
 
 
 DEFAULT_MAP_SETTINGS = {
-    "tile_source": "auto",       # "auto" 跟隨主題；其餘見 widgets/map_panel.py 的 TILE_SOURCES
+    "tile_source": "auto",       # "auto" 跟隨主題；其餘見 tiles.py 的 TILE_SOURCES
     "custom_tile_url": "",
     "custom_attribution": "",
     "center": [24.1368, 120.6862],

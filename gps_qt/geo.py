@@ -100,12 +100,7 @@ def simplify_route(route, tolerance_m):
 
 
 def cumulative_distances(points):
-    """回傳與 points 等長的累積距離（公尺），[0] 固定為 0。
-
-    內插點的「第幾個」會隨速度改變（速度越快點越少），但「走到路線的第幾公尺」
-    不會，所以進度一律用距離記錄，再由 index_at_distance() 換回目前這份內插
-    結果的索引。
-    """
+    """回傳與 points 等長的累積距離（公尺），[0] 固定為 0。"""
     if not points:
         return []
     totals = [0.0]
@@ -121,21 +116,8 @@ def route_length(route):
     )
 
 
-def index_at_distance(cumulative, distance_m):
-    """在 cumulative（遞增的累積距離）裡找出最接近 distance_m 的索引。"""
-    if not cumulative:
-        return 0
-    pos = bisect.bisect_left(cumulative, distance_m)
-    if pos <= 0:
-        return 0
-    if pos >= len(cumulative):
-        return len(cumulative) - 1
-    before, after = cumulative[pos - 1], cumulative[pos]
-    return pos if (after - distance_m) < (distance_m - before) else pos - 1
-
-
-def interpolate_points(route, speed_ms, interval_sec):
-    """沿整條路線依弧長等距取樣，每 interval_sec 秒一個點，回傳 [(lat, lon), ...]。
+class RouteSampler:
+    """沿整條路線依弧長等距切步，需要哪一步才算出那一步的座標。
 
     刻意把整條路線當成一條連續的線來切，而不是逐段切（修過的 bug）：逐段切時
     比一步還短的段也會佔掉一整秒（路線點越密越慢），1.9 步長的段又被 int()
@@ -144,25 +126,49 @@ def interpolate_points(route, speed_ms, interval_sec):
     步數取「總長 / 步長」四捨五入，再把總長平均分配，每一步的距離都一樣、
     整條路線的誤差不到半步。代價是轉角處會被截掉一點（最多約半步），
     取樣點本身仍一律落在原本的路線上。
-    """
-    vertices = [(point[0], point[1]) for point in route]
-    if len(vertices) < 2:
-        return vertices
-    cumulative = cumulative_distances(vertices)
-    total = cumulative[-1]
-    step_m = speed_ms * interval_sec
-    count = max(1, round(total / step_m)) if step_m > 0 else 1
-    spacing = total / count
 
-    points = [vertices[0]]
-    seg = 0
-    for k in range(1, count):
-        target = k * spacing
-        while cumulative[seg + 1] < target:
-            seg += 1
-        seg_len = cumulative[seg + 1] - cumulative[seg]
-        t = (target - cumulative[seg]) / seg_len if seg_len > 0 else 0.0
-        (lat1, lon1), (lat2, lon2) = vertices[seg], vertices[seg + 1]
-        points.append((lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t))
-    points.append(vertices[-1])
-    return points
+    不一次展開成整串內插點（修過的效能問題）：10 公里以 0.1 km/h 走會切成約
+    36 萬步，每一圈與每次改速度都在 UI 執行緒上整個重算會卡住畫面。建立時只算
+    原本路線點的累積距離，point() 再用二分搜尋找出所在的線段。
+
+    索引 0 是起點、last_index 是終點。distance_at() 回傳的是沿原路線的弧長，
+    與步長無關，所以進度可以記成距離，換速度後再用 index_at() 換回新的索引。
+    """
+
+    def __init__(self, route, step_m):
+        """route：[lat, lon, ...] 的列，至少兩點；step_m：每一步的距離（公尺）。"""
+        if len(route) < 2:
+            raise ValueError("路線至少要兩個點")
+        self._vertices = [(point[0], point[1]) for point in route]
+        self._cumulative = cumulative_distances(self._vertices)
+        self.total_m = self._cumulative[-1]
+        steps = max(1, round(self.total_m / step_m)) if step_m > 0 else 1
+        self.last_index = steps
+        self.spacing_m = self.total_m / steps
+
+    def distance_at(self, index):
+        """第 index 步在路線上的弧長位置（公尺）；超過終點時回傳總長。"""
+        if index >= self.last_index:
+            return self.total_m
+        return max(index, 0) * self.spacing_m
+
+    def index_at(self, distance_m):
+        """最接近 distance_m 的步數索引，夾在 0～last_index 之間。"""
+        if self.spacing_m <= 0:
+            return 0
+        index = math.floor(distance_m / self.spacing_m + 0.5)
+        return max(0, min(index, self.last_index))
+
+    def point(self, index):
+        """第 index 步的座標 (lat, lon)；起點與終點原樣回傳路線的端點。"""
+        target = self.distance_at(index)
+        if target <= 0:
+            return self._vertices[0]
+        if target >= self.total_m:
+            return self._vertices[-1]
+        # 找出 cumulative[seg] < target <= cumulative[seg + 1] 的線段。
+        seg = bisect.bisect_left(self._cumulative, target) - 1
+        seg_len = self._cumulative[seg + 1] - self._cumulative[seg]
+        t = (target - self._cumulative[seg]) / seg_len if seg_len > 0 else 0.0
+        (lat1, lon1), (lat2, lon2) = self._vertices[seg], self._vertices[seg + 1]
+        return (lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t)

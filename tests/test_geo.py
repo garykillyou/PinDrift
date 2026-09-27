@@ -5,11 +5,10 @@ import math
 import pytest
 
 from gps_qt.geo import (
+    RouteSampler,
     cumulative_distances,
     douglas_peucker,
     haversine,
-    index_at_distance,
-    interpolate_points,
     route_length,
     simplify_route,
 )
@@ -34,74 +33,76 @@ def test_haversine_matches_one_degree_of_latitude():
     assert distance == pytest.approx(ONE_DEGREE_LAT_M, abs=1.0)
 
 
-def test_interpolate_points_keeps_both_endpoints():
+def _all_points(sampler):
+    return [sampler.point(k) for k in range(sampler.last_index + 1)]
+
+
+def test_sampler_keeps_both_endpoints():
     # Arrange
     route = [(24.0, 120.0, ""), (25.0, 120.0, "")]
-    speed_ms = ONE_DEGREE_LAT_M / 10  # 每秒走十分之一段，預期切成 10 段
+    step_m = ONE_DEGREE_LAT_M / 10  # 每步走十分之一段，預期切成 10 段
 
     # Act
-    points = interpolate_points(route, speed_ms, 1.0)
+    sampler = RouteSampler(route, step_m)
 
     # Assert
-    assert points[0] == (24.0, 120.0)
-    assert points[-1] == (25.0, 120.0)
-    assert len(points) == 11
+    assert sampler.last_index == 10
+    assert sampler.point(0) == (24.0, 120.0)
+    assert sampler.point(sampler.last_index) == (25.0, 120.0)
 
 
-def test_interpolate_points_handles_speed_faster_than_whole_route():
-    # Arrange：速度快到一秒就走完整段，至少也要保留起點與終點
+def test_sampler_handles_step_longer_than_whole_route():
+    # Arrange：一步就走完整段，至少也要保留起點與終點
     route = [(24.0, 120.0, ""), (24.001, 120.0, "")]
 
     # Act
-    points = interpolate_points(route, 10000.0, 1.0)
+    sampler = RouteSampler(route, 10000.0)
 
     # Assert
-    assert points[0] == (24.0, 120.0)
-    assert points[-1] == (24.001, 120.0)
+    assert _all_points(sampler) == [(24.0, 120.0), (24.001, 120.0)]
 
 
 def _step_lengths(points):
     return [haversine(a[0], a[1], b[0], b[1]) for a, b in zip(points, points[1:])]
 
 
-def test_interpolate_points_keeps_speed_on_segments_shorter_than_one_step():
-    """路線點比「每秒該走的距離」還密時，每秒仍要走滿設定的速度。
+def test_sampler_keeps_speed_on_segments_shorter_than_one_step():
+    """路線點比「每一步該走的距離」還密時，每一步仍要走滿設定的距離。
 
     舊版逐段切割，一段不到一步也會佔掉一整秒：3 公尺一段、以 11 公尺/秒走，
     實際速度只剩四分之一左右（修過的 bug）。
     """
     # Arrange：每段約 3.3 公尺，共 300 段、約 1 公里
     route = [(24.0 + i * 0.00003, 120.0, "") for i in range(301)]
-    speed_ms = 11.0
+    step_m = 11.0
 
     # Act
-    points = interpolate_points(route, speed_ms, 1.0)
+    sampler = RouteSampler(route, step_m)
 
-    # Assert：每一步都接近 11 公尺，總步數接近「總距離 / 速度」
-    steps = _step_lengths(points)
-    total = cumulative_distances([(r[0], r[1]) for r in route])[-1]
-    assert all(step == pytest.approx(speed_ms, rel=0.02) for step in steps)
-    assert len(steps) == round(total / speed_ms)
+    # Assert：每一步都接近 11 公尺，總步數接近「總距離 / 步長」
+    steps = _step_lengths(_all_points(sampler))
+    assert all(step == pytest.approx(step_m, rel=0.02) for step in steps)
+    assert len(steps) == round(route_length(route) / step_m)
 
 
-def test_interpolate_points_does_not_speed_up_on_a_segment_just_under_two_steps():
+def test_sampler_does_not_speed_up_on_a_segment_just_under_two_steps():
     """一段是 1.9 步長時，舊版 int() 捨去成 1 步，那一秒會跑出將近兩倍速。"""
-    # Arrange：兩段各約 19 公尺，速度 10 公尺/秒
+    # Arrange：兩段各約 19 公尺，步長 10 公尺
     route = [(24.0, 120.0, ""), (24.00017, 120.0, ""), (24.00034, 120.0, "")]
 
     # Act
-    points = interpolate_points(route, 10.0, 1.0)
+    sampler = RouteSampler(route, 10.0)
 
     # Assert
-    assert max(_step_lengths(points)) < 12.0
+    assert max(_step_lengths(_all_points(sampler))) < 12.0
 
 
-def test_interpolate_points_samples_on_the_route_across_corners():
+def test_sampler_samples_on_the_route_across_corners():
     # Arrange：L 形路線，各邊約 111 公尺
     route = [(24.0, 120.0, ""), (24.001, 120.0, ""), (24.001, 120.001, "")]
 
     # Act
-    points = interpolate_points(route, 5.0, 1.0)
+    points = _all_points(RouteSampler(route, 5.0))
 
     # Assert：每個取樣點都落在兩條邊之一上
     for lat, lon in points:
@@ -110,15 +111,67 @@ def test_interpolate_points_samples_on_the_route_across_corners():
         assert on_first_leg or on_second_leg
 
 
-def test_interpolate_points_handles_route_with_zero_length():
+def test_sampler_handles_route_with_zero_length():
     # Arrange：所有點重疊，總長為 0
     route = [(24.0, 120.0, ""), (24.0, 120.0, ""), (24.0, 120.0, "")]
 
     # Act
-    points = interpolate_points(route, 5.0, 1.0)
+    sampler = RouteSampler(route, 5.0)
 
     # Assert
-    assert points == [(24.0, 120.0), (24.0, 120.0)]
+    assert _all_points(sampler) == [(24.0, 120.0), (24.0, 120.0)]
+    assert sampler.index_at(0.0) == 0
+
+
+def test_sampler_distances_are_arc_lengths_along_the_route():
+    """distance_at() 是沿原路線的弧長：與步長無關，換速度後才對得回同一個位置。"""
+    # Arrange：L 形路線，總長約 222 公尺，步長 10 公尺
+    route = [(24.0, 120.0, ""), (24.001, 120.0, ""), (24.001, 120.001, "")]
+    sampler = RouteSampler(route, 10.0)
+
+    # Act / Assert
+    assert sampler.distance_at(0) == 0.0
+    assert sampler.distance_at(sampler.last_index) == pytest.approx(route_length(route))
+    assert sampler.distance_at(sampler.last_index + 5) == sampler.distance_at(sampler.last_index)
+    assert sampler.distance_at(3) == pytest.approx(3 * sampler.spacing_m)
+
+
+def test_sampler_index_at_picks_the_nearest_step():
+    # Arrange：約 100 公尺，切成 10 步、每步約 10 公尺
+    route = [(24.0, 120.0, ""), (24.0009, 120.0, "")]
+    sampler = RouteSampler(route, 10.0)
+    spacing = sampler.spacing_m
+
+    # Act / Assert
+    assert sampler.index_at(-5.0) == 0
+    assert sampler.index_at(spacing * 0.9) == 1
+    assert sampler.index_at(spacing * 1.4) == 1
+    assert sampler.index_at(spacing * 1.6) == 2
+    assert sampler.index_at(99999.0) == sampler.last_index
+
+
+def test_sampler_does_not_expand_the_whole_route_up_front(monkeypatch):
+    """10 公里以 0.1 km/h 走會切成約 36 萬步：建立時只能處理原本的路線點，
+    不能先把每一步都算出來（在 UI 執行緒上會卡住好一陣子）。"""
+    import gps_qt.geo as geo_module
+
+    calls = []
+    real_haversine = geo_module.haversine
+
+    def counting_haversine(*args):
+        calls.append(1)
+        return real_haversine(*args)
+    monkeypatch.setattr(geo_module, "haversine", counting_haversine)
+    route = [(24.0, 120.0, ""), (24.09, 120.0, "")]  # 約 10 公里
+
+    # Act
+    sampler = RouteSampler(route, 0.1 / 3.6)
+    middle = sampler.point(sampler.last_index // 2)
+
+    # Assert
+    assert sampler.last_index > 300000
+    assert len(calls) < 10
+    assert middle[0] == pytest.approx(24.045, abs=1e-6)
 
 
 def test_douglas_peucker_keeps_endpoints_and_drops_collinear_points():
@@ -186,16 +239,6 @@ def test_cumulative_distances_starts_at_zero_and_accumulates():
     assert totals[2] == pytest.approx(222.39, abs=0.1)
 
 
-def test_index_at_distance_picks_the_nearest_index():
-    cumulative = [0.0, 10.0, 20.0, 30.0]
-
-    assert index_at_distance(cumulative, -5.0) == 0
-    assert index_at_distance(cumulative, 9.0) == 1
-    assert index_at_distance(cumulative, 14.0) == 1
-    assert index_at_distance(cumulative, 16.0) == 2
-    assert index_at_distance(cumulative, 999.0) == 3
-
-
 def test_progress_survives_a_speed_change_midway():
     """停止後改速度再開始移動，必須從原地繼續，不能被夾到路線終點。
 
@@ -204,18 +247,16 @@ def test_progress_survives_a_speed_change_midway():
     """
     route = [(25.0, 121.0, ""), (25.02, 121.0, "")]  # 約 2.2 公里
 
-    slow = interpolate_points(route, 1.4, 1.0)       # 步行速度，內插點很多
-    slow_totals = cumulative_distances(slow)
-    stopped_at = len(slow) // 2
-    travelled = slow_totals[stopped_at]
+    slow = RouteSampler(route, 1.4)       # 步行速度，步數很多
+    stopped_at = slow.last_index // 2
+    travelled = slow.distance_at(stopped_at)
 
-    fast = interpolate_points(route, 16.7, 1.0)      # 加速到 60 km/h，內插點變少
-    fast_totals = cumulative_distances(fast)
-    resumed_at = index_at_distance(fast_totals, travelled)
+    fast = RouteSampler(route, 16.7)      # 加速到 60 km/h，步數變少
+    resumed_at = fast.index_at(travelled)
 
-    assert resumed_at < len(fast) - 1
-    assert fast_totals[resumed_at] == pytest.approx(travelled, abs=20.0)
-    assert fast[resumed_at][0] == pytest.approx(slow[stopped_at][0], abs=0.0002)
+    assert resumed_at < fast.last_index
+    assert fast.distance_at(resumed_at) == pytest.approx(travelled, abs=20.0)
+    assert fast.point(resumed_at)[0] == pytest.approx(slow.point(stopped_at)[0], abs=0.0002)
 
 
 def test_simplify_route_drops_collinear_rows_and_keeps_endpoint_notes():

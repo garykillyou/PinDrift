@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import applog, geo, persistence, theme, tunneld, window_geometry
+from ..close_guard import CloseGuard
 from ..session import GPSSession
 from .favorites_panel import FavoritesPanel
 from .map_panel import MapPanel
@@ -95,6 +96,9 @@ class MainWindow(QMainWindow):
         self.session.route_finished.connect(self._on_route_finished)
         self.tray_icon = QSystemTrayIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_MessageBoxInformation), self
+        )
+        self._close_guard = CloseGuard(
+            self.session, self._confirm_close_while_simulating, self.close, self._log, parent=self
         )
         self._connect_map()
         self._setup_autosave()
@@ -565,7 +569,24 @@ class MainWindow(QMainWindow):
         self.settings["last_route"] = [[r[0], r[1], r[2]] for r in self.route_panel.route]
         self.settings["speed_kmh"] = self.route_panel.speed_spin.value()
 
+    def _confirm_close_while_simulating(self):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("關閉 PinDrift")
+        box.setText("模擬定位仍在進行中。\n關閉前要先恢復 iPhone 的真實定位。")
+        restore_btn = box.addButton("恢復真實定位並關閉", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(restore_btn)
+        box.exec()
+        return box.clickedButton() is restore_btn
+
     def closeEvent(self, event):
+        # 模擬進行中先擋下關閉：CloseGuard 詢問後走 restore_real_location()，
+        # 等 session_ended（或逾時）再呼叫一次 close()，那時才真的存檔關閉。
+        if not self._close_guard.allow_close():
+            event.ignore()
+            self._sync_btn_states()
+            return
         self._autosave_timer.stop()
         self._collect_settings()
         error = persistence.save_settings(self.settings)
