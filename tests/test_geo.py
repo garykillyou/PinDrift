@@ -275,3 +275,8 @@ def test_route_length_sums_segment_distances():
 def test_route_length_is_zero_for_fewer_than_two_points():
     assert route_length([]) == 0.0
     assert route_length([[25.0, 121.0, ""]]) == 0.0
+
+
+def test_cumulative_distances_of_empty_input_is_empty():
+    # 長度必須與輸入相同：回傳 [0.0] 會讓呼叫端以為有一個點
+    assert cumulative_distances([]) == []

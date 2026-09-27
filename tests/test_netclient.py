@@ -1,16 +1,16 @@
 """netclient.SingleFlightClient 的節流與過期結果過濾測試（用假的 reply，不連網路）。"""
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QObject, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtNetwork import QNetworkReply
 
 from gps_qt.netclient import MIN_REQUEST_INTERVAL_MS, SingleFlightClient
 
 
-@pytest.fixture(scope="module", autouse=True)
-def qt_app():
-    # QNetworkAccessManager 需要 QCoreApplication 存在
-    return QCoreApplication.instance() or QCoreApplication([])
+@pytest.fixture(autouse=True)
+def _qt_app(qapp):
+    # QNetworkAccessManager 需要 Q*Application 存在（共用 conftest 的 qapp）
+    return qapp
 
 
 class FakeReply(QObject):
@@ -103,3 +103,16 @@ def test_late_result_of_a_replaced_request_is_ignored():
     assert client.handled == []
     second.finish()
     assert client.handled == [second]
+
+
+def test_cancel_aborts_the_pending_request_and_drops_its_result():
+    # Arrange：開始移動時路徑規劃還在查詢中
+    client = RecordingClient()
+    reply = client.send()
+
+    # Act
+    client.cancel()
+
+    # Assert：結果不會再被處理，之後也能正常送出新請求
+    assert reply.error() == QNetworkReply.NetworkError.OperationCanceledError
+    assert client.handled == []

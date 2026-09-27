@@ -1,5 +1,6 @@
 """固定定位模式面板：緯度／經度輸入、快速選擇與座標貼上攔截。"""
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
@@ -52,6 +53,10 @@ class _CoordinatePasteLineEdit(QLineEdit):
 
 
 class PinPanel(QFrame):
+    # 使用者「確定」了一組座標：按快速選擇、貼上座標、打完字（Enter 或離開欄位）。
+    # 打字過程的 valueChanged 不算，否則每按一鍵都會把人瞬移到打到一半的座標。
+    coordinates_committed = Signal(float, float)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("card")
@@ -75,6 +80,8 @@ class PinPanel(QFrame):
         self.lon_spin.setLineEdit(_CoordinatePasteLineEdit(self._try_apply_pasted_coordinates))
         form.addRow("經度：", self.lon_spin)
         layout.addLayout(form)
+        self.lat_spin.editingFinished.connect(self._commit)
+        self.lon_spin.editingFinished.connect(self._commit)
 
         layout.addWidget(QLabel("快速選擇："))
         presets_row = QHBoxLayout()
@@ -94,6 +101,10 @@ class PinPanel(QFrame):
     def _apply_preset(self, lat, lon):
         self.lat_spin.setValue(lat)
         self.lon_spin.setValue(lon)
+        self._commit()
+
+    def _commit(self):
+        self.coordinates_committed.emit(*self.coordinates())
 
     def _try_apply_pasted_coordinates(self, text: str) -> bool:
         parts = text.split(",")
@@ -108,6 +119,7 @@ class PinPanel(QFrame):
             return False
         self.lat_spin.setValue(lat)
         self.lon_spin.setValue(lon)
+        self._commit()
         return True
 
     def coordinates(self):

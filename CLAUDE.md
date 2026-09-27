@@ -26,6 +26,12 @@ PinDrift 是一個 Python 桌面工具，透過 `pymobiledevice3` 模擬 iPhone�
 地圖設定是 `MapPanel`／`RoutePlanner` 就地改 `settings["map"]`，改完 emit `settings_changed`；
 平移／縮放視野刻意不觸發（跟隨模式下每秒都在變），只在關閉視窗時存。視窗幾何、路線、速度這些只存在
 widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `closeEvent()` 共用。
+執行日誌除了顯示在視窗（每行前面加 `HH:MM:SS`），也會經由 [applog.py](gps_qt/applog.py) 寫進同一個
+資料夾的 `pindrift.log`（1 MB 輪替、保留 3 份，已列入 `.gitignore`）。`main()` 最先呼叫
+`setup_file_logging()` 與 `install_exception_hooks()`：Qt slot 裡丟出的例外（PySide6 交給
+`sys.excepthook`）與 asyncio 沒人接的錯誤（`loop.set_exception_handler()`），在 pythonw／打包版原本
+都會完全消失，現在完整 traceback 進記錄檔、摘要進執行日誌；有主控台時仍照舊印到 stderr。
+各模組一律用 `logging.getLogger(__name__)`，都是 `gps_qt` logger 的子孫，會進到同一份記錄檔。
 讀取端 `load_settings()`／`load_favorites()` 回傳 **`(資料, 訊息)`**：檔案無法解析、最外層型別不對，
 或最愛裡有被 `normalize_favorite()` 略過的項目時，會先把原檔複製成
 `<檔名>.corrupt-<時間戳>.json` 再回報（`MainWindow` 建好版面後寫進執行日誌）。**絕對不能改回
@@ -59,7 +65,8 @@ python -m pymobiledevice3 remote tunneld
 
 # 執行測試（只涵蓋純邏輯：geo、map_bridge payload、geocode 解析、routing polyline、設定欄位的型別／範圍檢查、
 # 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
-# GPSSession._walk_route() 的續走／改速度／循環走法／時間間隔、KML 匯入、網路請求的節流與過期過濾）
+# GPSSession 的續走／改速度／循環走法／時間間隔／例外回報、KML 匯入、網路請求的節流與過期過濾、
+# 移動中鎖定路線表格與清空確認、固定座標的確定通知、記錄檔與例外攔截）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -79,7 +86,10 @@ tunneld 的主控台輸出），已凍結時跑同一個資料夾裡的 `PinDrif
 機器上沒有 Python，`python -m pymobiledevice3 ...` 那條路整條斷掉。
 [run.bat](run.bat) 因此只剩「用 `pythonw` 開 App」一件事。
 
-測試只涵蓋不需要 Qt 事件迴圈的邏輯（[tests/](tests)），Widget 與地圖頁面沒有自動化測試。
+測試以不需要 Qt 事件迴圈的邏輯為主（[tests/](tests)）；少數 widget（`RoutePanel`、`PinPanel`）以
+offscreen 平台建立來測，地圖頁面與 `MainWindow` 沒有自動化測試。**需要 Q*Application 的測試一律用
+[conftest.py](conftest.py) 的 `qapp` fixture**：一個行程只能有一個，而且若先建了 `QCoreApplication`，
+之後就建不出 widget 需要的 `QApplication`。
 `GPSSession` 只用到 QtCore 的 signal，可以直接 `asyncio.run(session._walk_route(...))` 測；
 [test_session.py](tests/test_session.py) 把 `_now()`／`_sleep_until()` 換成假的時鐘、`sim` 換成
 記錄呼叫的假物件，一秒一步的路線不用真的等。
@@ -100,11 +110,12 @@ PinDrift/
 ├── requirements-build.txt # 打包相依（pyinstaller）
 ├── .gitattributes         # vendored 的 Leaflet 檔案排除行尾轉換（見下方地圖面板）
 ├── LICENSE                # MIT 授權條款全文
-├── conftest.py            # 讓 pytest 把根目錄加進 sys.path
+├── conftest.py            # 讓 pytest 把根目錄加進 sys.path；共用的 qapp fixture（offscreen）
 ├── tests/                 # 邏輯測試（不需要 Qt 事件迴圈；session 用假時鐘）
 └── gps_qt/
     ├── main.py              # 進入點：QApplication + qasync 事件迴圈
     ├── paths.py             # 資源／使用者資料的路徑解析（打包後兩者要分開）
+    ├── applog.py            # 記錄檔 pindrift.log、日誌時間戳記、未處理例外的攔截
     ├── tunneld.py           # tunneld 偵測 + 提權啟動；也是 tunneld 子行程的本體
     ├── theme.py             # qt-material 主題套用、字級覆寫、danger/success 語意色
     ├── geo.py               # haversine()、interpolate_points()、douglas_peucker()、
@@ -141,6 +152,11 @@ PinDrift/
    匯入失敗／tunneld 連線失敗／找不到裝置這些提早 `return` 的分支也必須重設 `session_active` 並 emit
    `session_ended`，否則 UI 會卡在按下「開始移動」當下的忙碌狀態，連「停止」都救不回來——那時
    `_session_main()` 早已結束，沒有任何 task 在讀 `pending_action`，而 `_stop()` 本身也不會主動同步按鈕狀態。
+   同一個 `try` 還有 **`except Exception`**（修過的 bug）：移動中拔 USB、iPhone 鎖定、關掉開發者模式，
+   或程式本身出錯，例外都會從 `sim.set()` 等處丟出；沒接住的話只會變成 asyncio 印在 stderr 的
+   「Task exception was never retrieved」，而 pythonw／打包版沒有 stderr，使用者只看到按鈕突然恢復。
+   現在會寫進執行日誌（摘要）與記錄檔（traceback），`travelled_m` 保留，重新連線後可以接著走。
+   `_walk_route()` 每一圈開始時也會檢查路線是否少於 `MIN_ROUTE_POINTS`(2) 點，是的話停下並說明。
 
 ### 兩種模式（由 `MainWindow.mode` 控制，動作由 `pending_action` 驅動）
 - **路線模式（route）**：`_walk_route(sim, direction)` 中 `direction=1` 往終點走、`direction=-1` 往起點走回去。
@@ -226,8 +242,20 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   鎖定時 `map.js` 的 `setLocked()` 會把 `routeMarkerLayer`（節點專用的子圖層）從 `routeLayer` 移除，
   移動中地圖上只剩路徑線與軌跡；解鎖再把整層加回去，節點不需要重建。所以節點一律加到
   `routeMarkerLayer` 而不是 `routeLayer`，否則路徑線會跟著一起被藏掉。
+  **只鎖地圖不夠**（修過的 bug）：移動中還能改路線表格的話，地圖畫的是新路線、實際走的仍是舊路線，
+  循環模式下清空路線更會讓下一圈丟 `IndexError`。所以 `_sync_btn_states()` 用同一個 `_is_moving()`
+  一併鎖住：`RoutePanel.set_locked()`（新增／清空按鈕停用、`RouteTableModel.set_locked()` 讓儲存格
+  不可編輯且 `setData()` 一律拒收——鎖在 model 才擋得住鎖定前就開著的編輯器）、模式切換按鈕；
+  `_load_favorite()`、`_on_route_computed()`、`_on_simplify_requested()` 這些整條替換的入口則在
+  開頭檢查 `_is_moving()`。開始移動時 `RoutePlanner.cancel()` 會中止還在查詢的路徑規劃請求
+  （`SingleFlightClient.cancel()`），否則結果晚到仍會換掉路線。新增任何會改路線或模式的入口，
+  都要想一下移動中是否該擋。
   固定定位「保持中」（`_walk_pin()` 注入完已把 `pending_action` 設回 `pause`）**不算移動中**，
-  此時在地圖上點新座標會由 `_reinject_pin_if_holding()` 立刻重新注入一次，人就直接搬過去。
+  此時改座標會由 `_reinject_pin_if_holding()` 立刻重新注入一次，人就直接搬過去。入口包括地圖點選／
+  拖曳、載入地點最愛，以及 `PinPanel.coordinates_committed`（快速選擇、貼上座標、欄位打完字的
+  `editingFinished`；打字途中的 `valueChanged` 不算，否則每按一鍵都會瞬移到打到一半的座標）。
+  座標與 `GPSSession.last_position`（最後一次實際注入的座標）相同時不再送一次：離開輸入框時即使
+  沒改值也會觸發 `editingFinished`。
 - **軌跡**：`session.position_changed` 每次 `sim.set()` 後 emit，`map.js` 用 `polyline.addLatLng()`
   累加；超過 `TRAIL_MAX_POINTS`(3000) 就每兩點抽一點，循環模式跑整夜也不會累積出巨大的 polyline。
 - **跟隨**：使用者手動拖動地圖（`dragstart`）會自動關閉跟隨並回報 Python 同步核取方塊；
@@ -416,7 +444,8 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   表格的刪除欄與地圖節點彈出視窗的「刪除此點」都走這個方法，兩邊共用同一道下限檢查——新增其他
   刪除入口時也要接到這裡，不要各自呼叫 `model.remove_point()`。
 - 標題列除了「新增點」還有「清空座標點」（`model.clear()`）：清空後路線只剩 0 個點，要重新在地圖上
-  點或載入最愛才能再開始移動。
+  點或載入最愛才能再開始移動。清空前一定會先 `QMessageBox.question()` 確認：自動存檔會在兩秒內把
+  空路線寫進設定，誤按就救不回來。
 - `_update_info()` 由 `RouteTableModel` 的 `on_changed` callback 觸發，每次表格變動就重算總距離
   （`geo.route_length()`）、依目前速度估算的預計時間與節點數，顯示在「路線座標點」標題右邊。
   模型的每一種變動（含 `set_route()` 整條替換與 `clear()`）都經過 `_notify_changed()`，呼叫端不必自己

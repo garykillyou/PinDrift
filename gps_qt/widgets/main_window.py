@@ -3,6 +3,8 @@
 這裡只放 UI 骨架，連線狀態機在 gps_qt/session.py 的 GPSSession。
 """
 
+import logging
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow,
@@ -10,12 +12,14 @@ from PySide6.QtWidgets import (
     QSplitter, QStyle, QSystemTrayIcon, QVBoxLayout, QWidget,
 )
 
-from .. import geo, persistence, theme, tunneld, window_geometry
+from .. import applog, geo, persistence, theme, tunneld, window_geometry
 from ..session import GPSSession
 from .favorites_panel import FavoritesPanel
 from .map_panel import MapPanel
 from .pin_panel import PinPanel
 from .route_panel import DEFAULT_SPEED_KMH, RoutePanel
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_ROUTE = [
     [24.1368, 120.6862, "台中火車站"],
@@ -39,7 +43,9 @@ AUTOSAVE_DELAY_MS = 2000
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, loop=None, startup_messages=()):
+        """loop：qasync 的事件迴圈，用來攔截 asyncio 的未處理錯誤。
+        startup_messages：main() 在視窗建好之前收集到、要寫進執行日誌的訊息。"""
         super().__init__()
         self.settings, settings_message = persistence.load_settings()
         self.theme_name = self.settings.get("theme", "dark")
@@ -64,9 +70,11 @@ class MainWindow(QMainWindow):
         self._build_ui(route)
         self._apply_theme()
         # 讀檔時的狀況（壞檔已備份等）要等執行日誌建好才寫得進去。
-        for message in (settings_message, self.favorites_panel.load_message):
+        for message in (settings_message, self.favorites_panel.load_message, *startup_messages):
             if message:
                 self._log(message)
+        # 執行日誌建好之後，未處理的例外才能在這裡顯示摘要（main() 先前只寫記錄檔）。
+        applog.install_exception_hooks(self._log, loop)
 
         self.session = GPSSession(
             route_provider=lambda: self.route_panel.route,
@@ -255,11 +263,17 @@ class MainWindow(QMainWindow):
         self.coords_toggle_btn.setText(("▾ 收合 " if expanded else "▸ 展開 ") + name)
 
     def _load_favorite(self, fav):
+        # 移動中換路線或切到固定定位，地圖與實際走的路線會對不上（清單的「載入」
+        # 與地圖上的最愛圓點都走這裡）。
+        if self._is_moving():
+            self._log("模擬移動中無法載入最愛，請先按「停止」")
+            return
         if fav["type"] == "pin":
             self.pin_panel.lat_spin.setValue(fav["lat"])
             self.pin_panel.lon_spin.setValue(fav["lon"])
             self._switch_mode("pin")
             self.map_panel.fit_to([[fav["lat"], fav["lon"]]])
+            self._reinject_pin_if_holding()
         else:
             self.route_panel.set_route([list(r) for r in fav["route"]])
             self._switch_mode("route")
@@ -295,6 +309,9 @@ class MainWindow(QMainWindow):
         # 的兩個入口（載入最愛、路徑規劃算完、清空座標點）。舊的已走距離對新路線
         # 沒有意義，不歸零的話按「開始移動」會從新路線的某個中途點開始走。
         model.modelReset.connect(self.session.reset_progress)
+        # 快速選擇、貼上座標、打完字都算「座標確定」，保持中就立刻重新注入，
+        # 與在地圖上點選的行為一致。
+        self.pin_panel.coordinates_committed.connect(self._reinject_pin_if_holding)
         self.pin_panel.lat_spin.valueChanged.connect(self._push_pin_to_map)
         self.pin_panel.lon_spin.valueChanged.connect(self._push_pin_to_map)
         self.favorites_panel.favorites_changed.connect(self._push_favorites_to_map)
@@ -326,16 +343,20 @@ class MainWindow(QMainWindow):
         self.pin_panel.lon_spin.setValue(lon)
         self._reinject_pin_if_holding()
 
-    def _reinject_pin_if_holding(self):
+    def _reinject_pin_if_holding(self, *_args):
         """固定定位保持中時改座標就立刻重新注入，讓地圖上點一下人就搬過去。
 
         _walk_pin() 注入完座標會把 pending_action 設回 "pause"（連線仍然在），
         所以「session_active 且 pending_action 為 pause」就代表正在保持中。
         移動模式（forward/reverse）本來就會被地圖的編輯鎖擋住，走不到這裡。
+        座標與上次注入的相同就不再送一次：離開輸入框時即使沒改值也會觸發
+        editingFinished，不擋的話每點一下別的地方就多一輪注入與日誌。
         """
         if self.mode != "pin" or not self.session.session_active:
             return
         if self.session.pending_action != "pause":
+            return
+        if self.pin_panel.coordinates() == self.session.last_position:
             return
         self.session.start_forward()
         self._sync_btn_states()
@@ -350,7 +371,12 @@ class MainWindow(QMainWindow):
 
         set_route() 會觸發 modelReset，路線自然會回推到地圖；這裡另外把視野拉到
         新路線的範圍，並清掉先前的軌跡——路線都換了，舊軌跡已經沒有參考價值。
+        開始移動時 RoutePlanner.cancel() 會中止查詢，這裡再擋一次，萬一結果
+        仍在移動中送達也不會換掉正在走的路線。
         """
+        if self._is_moving():
+            self._log("模擬移動中，已忽略路徑規劃結果")
+            return
         self.route_panel.set_route([list(point) for point in route])
         self.map_panel.fit_to([[point[0], point[1]] for point in route])
         self.map_panel.clear_trail()
@@ -362,6 +388,8 @@ class MainWindow(QMainWindow):
         歸零——點被抽掉後路線長度也會略為改變，舊進度不再精確。路形幾乎不變，
         視野與軌跡都不需要動。點數沒有減少就不替換，免得無謂地歸零進度。
         """
+        if self._is_moving():
+            return
         route = self.route_panel.route
         simplified = geo.simplify_route(route, tolerance_m)
         if len(simplified) == len(route):
@@ -447,9 +475,17 @@ class MainWindow(QMainWindow):
         # 「恢復真實定位」沒有意義，初始化時只留「開始移動」可以點擊。
         self.restore_btn.setEnabled(self.session.session_active and not busy)
         self._update_return_btn_state()
-        # 模擬移動中鎖住地圖編輯，避免走到一半路線被改掉；固定定位「保持中」
-        # （pending_action 已回到 pause）不算移動中，仍可在地圖上點選新座標。
-        self.map_panel.set_locked(self.session.pending_action in ("forward", "reverse"))
+        # 模擬移動中鎖住所有會改路線的入口（地圖、路線表格、模式切換），避免走到
+        # 一半路線被改掉；固定定位「保持中」（pending_action 已回到 pause）不算
+        # 移動中，仍可在地圖上點選新座標。
+        moving = self._is_moving()
+        self.map_panel.set_locked(moving)
+        self.route_panel.set_locked(moving)
+        self.route_mode_btn.setEnabled(not moving)
+        self.pin_mode_btn.setEnabled(not moving)
+
+    def _is_moving(self):
+        return self.session.pending_action in ("forward", "reverse")
 
     def _update_return_btn_state(self):
         # 切換方向鈕現在單純切換「下次開始移動」要走的方向，不會觸發移動，
@@ -468,7 +504,9 @@ class MainWindow(QMainWindow):
             self._log(message)
 
     def _log(self, msg):
-        self.log_view.appendPlainText(msg)
+        # 同步寫進記錄檔：使用者回報問題時可以附上，視窗關掉之後也還查得到。
+        logger.info(msg)
+        self.log_view.appendPlainText(applog.timestamped(msg))
 
     # ── 視窗幾何記憶 + 響應式版面 ────────────────────
     def resizeEvent(self, event):

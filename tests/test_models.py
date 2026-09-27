@@ -1,6 +1,7 @@
 """models.RouteTableModel 的輸入驗證測試（只用到 QtCore，不需要事件迴圈）。"""
 
 import pytest
+from PySide6.QtCore import Qt
 
 from gps_qt.models import COL_LAT, COL_LON, COL_NOTE, RouteTableModel
 
@@ -54,3 +55,17 @@ def test_set_route_notifies_on_changed_like_other_edits():
     # Assert
     assert calls == [1]
     assert model.rowCount() == 3
+
+
+def test_locked_model_rejects_edits_and_is_not_editable(model):
+    # Arrange：移動中鎖定，表格不能再改路線
+    model.set_locked(True)
+
+    # Act / Assert
+    assert model.setData(model.index(0, COL_LAT), 25.0) is False
+    assert model.route[0][0] == 24.0
+    assert not (model.flags(model.index(0, COL_LAT)) & Qt.ItemIsEditable)
+
+    model.set_locked(False)
+    assert model.flags(model.index(0, COL_LAT)) & Qt.ItemIsEditable
+    assert model.setData(model.index(0, COL_LAT), 25.0) is True

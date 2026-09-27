@@ -8,6 +8,9 @@ pindrift_settings.json
 pindrift_*.corrupt-*.json
 pindrift_*.json.tmp
 
+# 執行記錄檔（含輪替的舊檔）
+pindrift.log*
+
 # Python
 __pycache__/
 *.py[cod]

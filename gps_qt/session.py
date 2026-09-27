@@ -11,12 +11,16 @@
 """
 
 import asyncio
+import logging
 
 from PySide6.QtCore import QObject, Signal
 
 from .geo import cumulative_distances, index_at_distance, interpolate_points
 
+logger = logging.getLogger(__name__)
+
 STEP_INTERVAL_S = 1.0  # 每隔幾秒注入一次座標
+MIN_ROUTE_POINTS = 2  # 路線至少要兩個點才能內插
 # 兩個累積距離相差不到這個值就當成同一個位置（浮點誤差的容許範圍）。
 _SAME_POSITION_M = 0.01
 
@@ -59,6 +63,8 @@ class GPSSession(QObject):
         # 由速度決定，停止時改速度（或編輯路線）會讓舊索引對到完全不同的位置，
         # 索引過大時還會被夾到最後一點，再按「開始移動」人就直接瞬移到終點。
         self.travelled_m = 0.0
+        # 最後一次實際注入的座標；連線結束時歸零（UI 用來判斷座標有沒有變）。
+        self.last_position = None
         self._task = None
 
     # ── 外部呼叫的動作：對應原本四顆按鈕 ────────────────────
@@ -146,18 +152,30 @@ class GPSSession(QObject):
                 self.log.emit("已恢復真實定位")
                 self.progress_value.emit(0.0)
                 self.progress_label.emit("已恢復真實定位")
+        except Exception as exc:
+            # 移動中拔掉 USB、iPhone 鎖定、關掉開發者模式，或這裡的程式本身出錯，
+            # 都會從 sim.set() 等處丟出例外。沒接住的話只會變成 asyncio 印在 stderr 的
+            # 「Task exception was never retrieved」——pythonw／打包版根本沒有 stderr，
+            # 使用者只看到按鈕突然恢復，不知道發生什麼事（修過的 bug）。
+            # travelled_m 刻意不歸零：重新連線後按「開始移動」可以從原地接著走。
+            logger.exception("模擬中斷")
+            self.log.emit(f"模擬中斷：{type(exc).__name__}: {exc}")
+            self.log.emit("   請確認 USB 連線、iPhone 已解鎖且開發者模式仍開啟，再按「開始移動」")
+            self.progress_label.emit("模擬中斷")
         finally:
             # 連線已結束（正常斷線、提早 return 或中途出錯），動作一併歸零再通知：
             # 殘留的 "disconnect"/"forward" 會讓 UI 以為還在忙，按鈕全部卡在停用。
             # 狀態由這裡自己收尾，不交給收到 signal 的 UI 從外面改。
             self.session_active = False
             self.pending_action = "pause"
+            self.last_position = None
             self.session_ended.emit()
 
     async def _walk_pin(self, sim):
         lat, lon = self._pin_provider()
         self.log.emit(f"固定位置：{lat:.6f}, {lon:.6f}")
         await sim.set(lat, lon)
+        self.last_position = (lat, lon)
         self.position_changed.emit(lat, lon)
         self.progress_value.emit(1.0)
         self.progress_label.emit(f"固定中  {lat:.6f}, {lon:.6f}")
@@ -181,8 +199,16 @@ class GPSSession(QObject):
 
         skip_current = False
         while True:
+            route = self._route_provider()
+            if len(route) < MIN_ROUTE_POINTS:
+                # 移動中路線表格已被鎖住，正常走不到這裡；仍要防：少於兩點無法內插，
+                # 循環模式下一圈會直接丟 IndexError 把整個模擬弄掉（修過的 bug）。
+                self.log.emit(f"路線少於 {MIN_ROUTE_POINTS} 個點，已停止移動")
+                self.progress_label.emit("已停止")
+                self.pending_action = "pause"
+                return
             speed = self._speed_provider()
-            points = interpolate_points(self._route_provider(), speed, STEP_INTERVAL_S)
+            points = interpolate_points(route, speed, STEP_INTERVAL_S)
             # 每一輪都重算：速度或路線在停止期間被改過的話，內插點的數量與間距
             # 都會不同，必須用已走距離重新換算成這份內插結果裡的索引。
             cumulative = cumulative_distances(points)
@@ -234,6 +260,7 @@ class GPSSession(QObject):
                 return _SPEED_CHANGED, idx
             lat, lon = points[i]
             await sim.set(lat, lon)
+            self.last_position = (lat, lon)
             self.position_changed.emit(lat, lon)
             idx = i
             self.travelled_m = cumulative[i]

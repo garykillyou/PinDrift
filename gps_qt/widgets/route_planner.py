@@ -110,9 +110,15 @@ class RoutePlanner(QWidget):
         return True
 
     def cancel(self):
-        """取消進行中的點選（切換模式、開始移動等情況）。"""
+        """取消進行中的點選或查詢（切換模式、開始移動等情況）。
+
+        查詢中也要中止已送出的請求：否則結果晚一點才回來，仍會整條換掉路線。
+        """
         if self._state == IDLE:
             return
+        if self._state == ROUTING:
+            self._router.cancel()
+            self.log.emit("路徑規劃：已取消查詢")
         self._state = IDLE
         self._points = []
         self._sync_button()

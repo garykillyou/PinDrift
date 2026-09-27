@@ -5,7 +5,7 @@
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QTableView, QVBoxLayout,
+    QMessageBox, QPushButton, QTableView, QVBoxLayout,
 )
 
 from .. import theme
@@ -27,6 +27,7 @@ class RoutePanel(QFrame):
     def __init__(self, route, parent=None, initial_speed=DEFAULT_SPEED_KMH):
         super().__init__(parent)
         layout = QVBoxLayout(self)
+        self._locked = False
 
         # ── 速度設定卡 ──
         speed_card = QFrame(self)
@@ -71,13 +72,13 @@ class RoutePanel(QFrame):
         self.info_label = QLabel("")
         header_row.addWidget(self.info_label)
         header_row.addStretch(1)
-        add_btn = QPushButton("新增點")
-        theme.mark_class(add_btn, "success")
-        add_btn.clicked.connect(self._add_point)
-        header_row.addWidget(add_btn)
-        clear_btn = QPushButton("清空座標點")
-        clear_btn.clicked.connect(self._clear_points)
-        header_row.addWidget(clear_btn)
+        self.add_btn = QPushButton("新增點")
+        theme.mark_class(self.add_btn, "success")
+        self.add_btn.clicked.connect(self._add_point)
+        header_row.addWidget(self.add_btn)
+        self.clear_btn = QPushButton("清空座標點")
+        self.clear_btn.clicked.connect(self._clear_points)
+        header_row.addWidget(self.clear_btn)
         layout.addLayout(header_row)
 
         self.model = RouteTableModel(route, on_changed=self._update_info)
@@ -113,17 +114,35 @@ class RoutePanel(QFrame):
         # model.set_route() 會經由 on_changed 觸發 _update_info()，不必自己再算一次。
         self.model.set_route(route)
 
+    def set_locked(self, locked):
+        """模擬移動中鎖住所有會改路線的入口（與地圖的編輯鎖同步）。
+
+        只鎖地圖不夠：移動中改表格的話，地圖畫的是新路線、實際走的仍是舊路線；
+        循環模式下清空路線，下一圈還會直接讓模擬中斷（修過的 bug）。表格本身不停用，
+        移動中仍可捲動查看。整條替換的 set_route() 由 MainWindow 在入口擋掉。
+        """
+        self._locked = locked
+        self.model.set_locked(locked)
+        self.add_btn.setEnabled(not locked)
+        self.clear_btn.setEnabled(not locked)
+
     def _add_point(self):
+        if self._locked:
+            return
         route = self.model.route
         last = route[-1] if route else [24.0, 121.0, "新增點"]
         self.model.insert_point([last[0] + 0.001, last[1] + 0.001, "新增點"])
 
     def add_point_at(self, lat, lon, note=""):
         """在路線尾端加一個點（地圖點擊用）。"""
+        if self._locked:
+            return
         self.model.insert_point([lat, lon, note])
 
     def move_point(self, row, lat, lon):
         """更新某個點的座標（地圖拖曳節點用）。"""
+        if self._locked:
+            return
         self.model.set_coordinates(row, lat, lon)
 
     def delete_point(self, row):
@@ -131,11 +150,20 @@ class RoutePanel(QFrame):
 
         表格的刪除欄與地圖節點的彈出視窗都走這裡，兩邊共用同一道下限檢查。
         """
-        if len(self.model.route) <= 2:
+        if self._locked or len(self.model.route) <= 2:
             return
         self.model.remove_point(row)
 
     def _clear_points(self):
+        """清空前先確認：自動存檔會在兩秒內把空路線寫進設定，誤按就救不回來。"""
+        count = len(self.model.route)
+        if self._locked or count == 0:
+            return
+        reply = QMessageBox.question(
+            self, "確認清空", f"確定要清空全部 {count} 個座標點嗎？此動作無法復原。"
+        )
+        if reply != QMessageBox.Yes:
+            return
         # 清空後不到兩點，on_changed 觸發的 _update_info() 會一併清掉路線資訊。
         self.model.clear()
 

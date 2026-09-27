@@ -264,3 +264,76 @@ def test_session_end_resets_pending_action_even_on_early_return(monkeypatch):
 
     # Assert：session_ended 發出的當下狀態就已經歸零
     assert ended == [("pause", False)]
+
+
+class _FakeContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _patch_device(monkeypatch, sim):
+    """讓 _session_main() 連到假的裝置：找得到一台，DVT 連線直接給 sim。"""
+    import pymobiledevice3.services.dvt.instruments.dvt_provider as dvt_module
+    import pymobiledevice3.services.dvt.instruments.location_simulation as loc_module
+    import pymobiledevice3.tunneld.api as tunneld_api
+
+    class FakeRsd:
+        udid = "00008110-TEST"
+
+    async def one_device():
+        return [FakeRsd()]
+    monkeypatch.setattr(tunneld_api, "get_tunneld_devices", one_device)
+    monkeypatch.setattr(dvt_module, "DvtProvider", lambda rsd: _FakeContext("dvt"))
+    monkeypatch.setattr(loc_module, "LocationSimulation", lambda dvt: _FakeContext(sim))
+
+
+def test_session_reports_an_error_raised_while_walking(monkeypatch):
+    """移動中拔掉 USB 這類例外要寫進執行日誌，不能只丟進沒人看的 stderr。"""
+    # Arrange：第 3 次注入時連線中斷
+    harness = Harness()
+
+    def on_set(n):
+        if n == 3:
+            raise ConnectionResetError("裝置已中斷連線")
+    sim = FakeSim(harness.clock, on_set=on_set)
+    _patch_device(monkeypatch, sim)
+    logs, ended = [], []
+    harness.session.log.connect(logs.append)
+    harness.session.session_ended.connect(lambda: ended.append(harness.session.pending_action))
+    harness.session.pending_action = "forward"
+
+    # Act：例外不能從 _session_main() 漏出去
+    asyncio.run(harness.session._session_main())
+
+    # Assert
+    assert any("模擬中斷" in line and "裝置已中斷連線" in line for line in logs)
+    assert ended == ["pause"]
+    assert harness.session.session_active is False
+    assert harness.session.travelled_m > 0  # 已走的距離保留，重新連線後可以接著走
+
+
+def test_route_emptied_while_looping_stops_with_a_message():
+    """移動中路線被清空時要停下來並說明，不能在下一圈丟 IndexError。"""
+    # Arrange：來回模式，走到第 3 步時路線被清空
+    route = [list(row) for row in ROUTE]
+    harness = Harness(route=route, loop=True, style="bounce")
+    logs = []
+    harness.session.log.connect(logs.append)
+
+    def on_set(n):
+        if n == 3:
+            route.clear()
+    sim = FakeSim(harness.clock, on_set=on_set)
+
+    # Act
+    harness.walk(1, sim)
+
+    # Assert
+    assert harness.session.pending_action == "pause"
+    assert any("少於 2 個點" in line for line in logs)

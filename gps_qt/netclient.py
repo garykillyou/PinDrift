@@ -53,6 +53,10 @@ class SingleFlightClient(QObject):
         self._reply.finished.connect(self._on_finished)
         return True
 
+    def cancel(self):
+        """中止還沒回來的請求；它的結果會被 _on_finished() 當成已取消而丟掉。"""
+        self._abort_pending()
+
     def _now_ms(self):
         return QDateTime.currentMSecsSinceEpoch()
 

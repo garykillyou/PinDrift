@@ -106,6 +106,8 @@ def cumulative_distances(points):
     不會，所以進度一律用距離記錄，再由 index_at_distance() 換回目前這份內插
     結果的索引。
     """
+    if not points:
+        return []
     totals = [0.0]
     for (lat1, lon1), (lat2, lon2) in zip(points, points[1:]):
         totals.append(totals[-1] + haversine(lat1, lon1, lat2, lon2))

@@ -18,6 +18,7 @@ class RouteTableModel(QAbstractTableModel):
         super().__init__(parent)
         self._route = route  # list of [lat, lon, note]，與呼叫端共用同一個 list 參照
         self._on_changed = on_changed
+        self._locked = False
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self._route)
@@ -30,9 +31,17 @@ class RouteTableModel(QAbstractTableModel):
             return None
         return HEADERS[section]
 
+    def set_locked(self, locked):
+        """移動中鎖定：儲存格不能再編輯（已經開著的編輯器按 Enter 也寫不進來）。
+
+        鎖在 model 而不是只停用 view：編輯器在鎖定前就開著的話，之後提交仍會走
+        setData()，只有這一層擋得住。
+        """
+        self._locked = locked
+
     def flags(self, index):
         base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        if index.column() in (COL_LAT, COL_LON, COL_NOTE):
+        if not self._locked and index.column() in (COL_LAT, COL_LON, COL_NOTE):
             base |= Qt.ItemIsEditable
         return base
 
@@ -66,7 +75,7 @@ class RouteTableModel(QAbstractTableModel):
         return self._route
 
     def setData(self, index, value, role=Qt.EditRole):
-        if role != Qt.EditRole or not index.isValid():
+        if self._locked or role != Qt.EditRole or not index.isValid():
             return False
         row, col = index.row(), index.column()
         try:

@@ -14,15 +14,21 @@ import PySide6.QtWebEngineWidgets  # noqa: F401  isort:skip
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
+from . import applog
 from .widgets.main_window import MainWindow
 
 
 def main():
+    # 記錄檔與例外攔截要最先設好：MainWindow 建構途中出錯也要留下 traceback
+    # （pythonw／打包版沒有 stderr）。此時還沒有執行日誌面板，先只寫記錄檔。
+    log_message = applog.setup_file_logging()
+    applog.install_exception_hooks()
+
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
-    window = MainWindow()  # noqa: F841 保留參照，避免被 GC
+    window = MainWindow(loop=loop, startup_messages=[log_message])  # noqa: F841 保留參照，避免被 GC
 
     with loop:
         loop.run_forever()
