@@ -49,6 +49,8 @@ class RoutePanel(QFrame):
         self.speed_spin = QDoubleSpinBox()
         self.speed_spin.setRange(0.1, 300.0)
         self.speed_spin.setValue(initial_speed)
+        # 預設按鈕也是走 setValue()，同一條 signal 就涵蓋兩種改速度的入口
+        self.speed_spin.valueChanged.connect(lambda _value: self._update_info())
         custom_row.addWidget(self.speed_spin)
         self.loop_check = QCheckBox("循環模式")
         custom_row.addWidget(self.loop_check)
