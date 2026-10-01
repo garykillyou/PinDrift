@@ -2,7 +2,7 @@
 # pymobiledevice3 改版常搬動模組路徑（session.py 直接 import 內部模組），PySide6／
 # qt-material 的次版號會改樣式表與 WebEngine 行為，qasync 還在 0.x。放寬上限前要
 # 先實測；打包一律用 requirements-lock.txt 的固定版本（見 scripts/lock_requirements.py）。
-# 實測版本：pymobiledevice3 11.15.5、PySide6 6.11.2、qasync 0.28.0、qt-material 2.17
+# 實測版本：pymobiledevice3 11.19.4、PySide6 6.11.2、qasync 0.28.0、qt-material 2.17
 pymobiledevice3>=11.12.4,<12
 # 地圖面板需要 QtWebEngine / QtWebChannel / QtNetwork，這些在 PySide6-Addons 裡；
 # 完整的 PySide6 套件已包含 Addons，但若環境裝的是 PySide6-Essentials 就會缺。

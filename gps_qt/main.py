@@ -14,7 +14,7 @@ import PySide6.QtWebEngineWidgets  # noqa: F401  isort:skip
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
-from . import applog
+from . import applog, tile_scheme
 from .widgets.main_window import MainWindow
 
 
@@ -24,6 +24,8 @@ def main():
     log_message = applog.setup_file_logging()
     applog.install_exception_hooks()
 
+    # 自訂 scheme 只能在建立 QApplication 之前登記，晚了 QtWebEngine 會直接忽略。
+    tile_scheme.register_scheme()
     app = QApplication(sys.argv)
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)

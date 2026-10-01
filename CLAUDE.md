@@ -67,7 +67,7 @@ python -m pymobiledevice3 remote tunneld
 # 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
 # GPSSession 的續走／改速度／循環走法／時間間隔／停止立即生效／例外回報／tunneld 提示、KML 匯入、
 # 網路請求的節流與過期過濾、移動中鎖定路線表格與清空確認、固定座標的確定通知、記錄檔與例外攔截、
-# 圖磚選擇與自訂版權標示的 escape、模擬中關閉視窗的恢復流程）
+# 圖磚選擇與自訂版權標示的 escape、圖磚快取的路徑／新鮮度／容量上限、模擬中關閉視窗的恢復流程）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -147,6 +147,8 @@ PinDrift/
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
     ├── close_guard.py       # CloseGuard：模擬中關閉視窗時先恢復真實定位再關
     ├── tiles.py             # 圖磚來源清單 + resolve_tile()（自訂版權標示在這裡 escape）
+    ├── tile_cache.py        # 圖磚本機快取的純函式（URL 改寫、檔案路徑、新鮮度、容量上限）
+    ├── tile_scheme.py       # pdtile: scheme 處理器：快取優先，沒有才下載並存起來
     ├── models.py            # RouteTableModel + DeleteButtonDelegate（路線表格虛擬化）
     ├── map_bridge.py        # QWebChannel 契約（MapBridge）+ payload 序列化純函式
     ├── netclient.py         # SingleFlightClient：節流 + 只保留最後一次請求（geocode/routing 共用）
@@ -306,6 +308,25 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
     （修過的安全問題）；設定檔裡存的仍是原文，輸入框才顯示得回來。內建清單的版權標示是寫死的 HTML
     （`&copy;` 實體），原樣送出，不能一起 escape。新增任何會把使用者輸入送進頁面當 HTML 用的欄位，
     都要在 Python 端 escape。
+  - **瀏覽過的圖磚存進本機快取**（[tile_cache.py](gps_qt/tile_cache.py)＋[tile_scheme.py](gps_qt/tile_scheme.py)）：
+    `_push_tile()` 送出前用 `cached_url_template()` 在 http(s) 樣板前面加上 `pdtile:`，Leaflet 照常展開
+    `{z}/{x}/{y}/{s}/{r}`，實際請求由 `TileSchemeHandler` 接手：`TILE_FRESH_SECONDS`（90 天）內的快取
+    直接回、不連線；過期或沒有才用 `QNetworkAccessManager` 下載（帶 `netclient.USER_AGENT`，符合 OSM
+    要求可識別 UA）並寫進 exe 旁的 `tile_cache/`（已列入 `.gitignore`）；下載失敗時退回過期的快取，
+    都沒有才 `job.fail()` 讓 `tileerror` 橫幅照常出現。**刻意只快取看過的、不做範圍批次下載**：OSM 官方
+    圖磚政策明文禁止 bulk download，CARTO 免費圖磚也不允許——之後若要加「預先下載一塊範圍」，只能對
+    使用者自行確認允許下載的自訂來源開放。
+    - `register_scheme()` 必須在建立 `QApplication` **之前**呼叫（`main.py`），晚了 Qt 會默默忽略，
+      地圖就整片空白。
+    - 算雜湊前會把 `{s}` 展開出來的單字母子網域（`a.`～`d.`）統一成 `s.`，同一張圖磚不會因為隨機子網域存三份；下載仍用原網址。下載回應要 HTTP 200 **且內容是圖片**（`is_image()` 看特徵碼）才存：captive portal／限流頁常是 200，存進去地圖會壞到快取過期。同一網址的並行請求合併成一次下載（`_PendingFetch`，全部 job 都被取消才中止），下載有 `DOWNLOAD_TIMEOUT_MS` 逾時，逾時後退回過期的快取。
+    - 檔名是上游網址的 SHA-1（前兩碼分一層資料夾），不照網址路徑建資料夾：網址是頁面給的字串，
+      直接組路徑就得自己擋路徑穿越。`upstream_url()` 也只放行 http(s)，不讓頁面借道讀本機檔案。
+    - 寫入沿用 `.tmp` + `os.replace()`；寫不進去（唯讀位置）只記一次記錄檔，地圖照常從網路顯示。
+    - 容量上限 `TILE_CACHE_MAX_BYTES`(500 MB)：`install()` 啟動時在背景執行緒跑 `prune_cache()`，
+      從最舊的刪到上限的 `TILE_CACHE_PRUNE_RATIO`(0.8)，略過寫到一半的 `.tmp`。背景執行緒不能碰
+      Qt 物件，結果只寫記錄檔。
+    - Leaflet 取消圖磚（快速平移）時 job 會被銷毀：`abort()` 會同步觸發 `finished`，所以先在
+      `job.destroyed` 裡記下「job 已經不在」再中止，`_on_fetched()` 看到就不再碰 job。
 - **地名搜尋刻意由 Python 端發送**（[geocode.py](gps_qt/geocode.py) 用 `QNetworkAccessManager`）：
   Nominatim 政策要求可識別的 User-Agent 且每秒最多 1 次，在 QWebEngine 裡 `fetch()` 帶的是瀏覽器
   UA，改不掉也不合規。route 模式搜尋只帶視野過去，**不自動加點**；結果超過一筆會跳 `QMenu` 讓使用者挑。
@@ -315,7 +336,7 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   在這裡。子類別只負責組請求（`new_request()` 已帶好 User-Agent，再交給 `_send()`）、實作
   `_handle_reply()`，並用 `THROTTLED_MESSAGE` 覆寫節流時的提示文字。
 - **Leaflet 本地化**在 `web/vendor/`：純靠 CDN 時斷網會整頁白，本地化後控制項仍在，
-  只有圖磚空白並由 `tileerror` 顯示提示橫幅。
+  只有沒快取過的圖磚空白並由 `tileerror` 顯示提示橫幅（看過的圖磚有本機快取，見上方）。
   `.gitattributes` 把 `gps_qt/web/vendor/**` 標為 `-text`，**vendored 檔案一律不做行尾轉換**：
   上游發布的 `leaflet.css` 本身就是 CRLF，被 `core.autocrlf` 正規化成 LF 後版控內容會與上游
   差 661 bytes，日後升級版本時整個檔案都會是差異，也無法用 checksum 驗證抓下來的檔案有沒有

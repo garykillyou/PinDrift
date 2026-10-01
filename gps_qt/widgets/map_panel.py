@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSizePolicy, QVBoxLayout,
 )
 
-from .. import paths, theme
+from .. import paths, theme, tile_cache, tile_scheme
 from ..geocode import Geocoder
 from ..map_bridge import MapBridge, bounds_payload, favorites_payload, route_payload
 from ..tiles import AUTO_TILE, CUSTOM_TILE, TILE_SOURCES, resolve_tile
@@ -143,6 +143,9 @@ class MapPanel(QFrame):
         page.settings().setAttribute(
             QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True
         )
+
+        # 圖磚改走 pdtile: scheme，瀏覽過的存進本機快取，離線時也看得到（見 tile_cache.py）。
+        self._tile_handler = tile_scheme.install(page.profile(), self)
 
         self.bridge = MapBridge(self)
         self.channel = QWebChannel(page)
@@ -272,7 +275,7 @@ class MapPanel(QFrame):
     def _push_tile(self):
         if self._ready:
             url, attribution = resolve_tile(self._settings, self._theme_name)
-            self.bridge.tile_changed.emit(url, attribution)
+            self.bridge.tile_changed.emit(tile_cache.cached_url_template(url), attribution)
 
     def _push_view(self):
         center = self._settings.get("center")

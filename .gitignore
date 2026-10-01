@@ -11,6 +11,9 @@ pindrift_*.json.tmp
 # 執行記錄檔（含輪替的舊檔）
 pindrift.log*
 
+# 瀏覽過的地圖圖磚快取
+tile_cache/
+
 # Python
 __pycache__/
 *.py[cod]
