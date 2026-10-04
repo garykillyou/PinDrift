@@ -154,3 +154,26 @@ def test_load_speed_kmh_falls_back_on_invalid_values(value):
 def test_load_speed_kmh_keeps_valid_value():
     assert persistence.load_speed_kmh({"speed_kmh": 33}, 20.0) == 33.0
     assert persistence.load_speed_kmh({}, 20.0) == 20.0
+
+
+ROUTE = [[24.0, 120.0, ""], [24.1, 120.1, ""]]
+
+
+def test_normalize_favorite_keeps_valid_route_speed():
+    fav = persistence.normalize_favorite({"type": "route", "name": "a", "route": ROUTE, "speed_kmh": 12})
+
+    assert fav["speed_kmh"] == 12.0
+
+
+@pytest.mark.parametrize("bad", ["fast", True, 0, -5, float("nan"), float("inf"), None])
+def test_normalize_favorite_drops_invalid_speed_but_keeps_favorite(bad):
+    fav = persistence.normalize_favorite({"type": "route", "name": "a", "route": ROUTE, "speed_kmh": bad})
+
+    assert fav is not None
+    assert "speed_kmh" not in fav
+
+
+def test_normalize_favorite_route_without_speed_stays_without_speed():
+    fav = persistence.normalize_favorite({"type": "route", "name": "a", "route": ROUTE})
+
+    assert "speed_kmh" not in fav

@@ -164,7 +164,12 @@ def normalize_favorite(fav):
         route = [_normalize_point(item) for item in raw]
         if any(point is None for point in route):
             return None
-        return {**fav, "route": route}
+        result = {**fav, "route": route}
+        # 速度是選填欄位（舊檔與 KML 匯入的路線沒有）；不合法就拿掉，不連整筆最愛一起丟。
+        speed = result.pop("speed_kmh", None)
+        if _is_finite_number(speed) and speed > 0:
+            result["speed_kmh"] = float(speed)
+        return result
     return None
 
 

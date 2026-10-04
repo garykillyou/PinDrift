@@ -169,6 +169,7 @@ class MainWindow(QMainWindow):
             pin_provider=lambda: self.pin_panel.coordinates(),
             route_provider=lambda: self.route_panel.route,
             mode_provider=lambda: self.mode,
+            speed_provider=lambda: self.route_panel.speed_spin.value(),
         )
         self.favorites_panel.load_requested.connect(self._load_favorite)
         left_layout.addWidget(self.favorites_panel)
@@ -280,6 +281,8 @@ class MainWindow(QMainWindow):
             self._reinject_pin_if_holding()
         else:
             self.route_panel.set_route([list(r) for r in fav["route"]])
+            if "speed_kmh" in fav:
+                self.route_panel.speed_spin.setValue(fav["speed_kmh"])
             self._switch_mode("route")
             self.map_panel.fit_to([[r[0], r[1]] for r in fav["route"]])
         # 換了地點/路線，先前的軌跡已經沒有參考價值。

@@ -39,6 +39,10 @@ widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `clo
 `<檔名>.corrupt-<時間戳>.json` 再回報（`MainWindow` 建好版面後寫進執行日誌）。**絕對不能改回
 默默吞掉例外**（修過的 bug）：回傳預設值之後的下一次存檔會把壞檔連同還救得回來的資料整個蓋掉。
 - `pindrift_favorites.json`：最愛地點／路線（`{"type": "pin"|"route", "name", ...}` 陣列）。
+  路線最愛有選填的 `speed_kmh`（儲存當下的速度）：`normalize_favorite()` 只接受正的有限數值，
+  不合法就**只拿掉這個欄位**、不略過整筆最愛（所以不觸發備份）；沒有這個欄位（舊檔、KML 匯入）
+  的路線載入時不改動速度欄位。`FavoritesPanel` 由 `speed_provider` 取得儲存時的速度，
+  `MainWindow._load_favorite()` 負責載入時還原。
 - `pindrift_settings.json`：`theme`（主題偏好）、`window`（視窗幾何 + `maximized`）、
   `last_route`（上次的路線座標點）、`speed_kmh`（上次的移動速度）、
   `map`（地圖的 `tile_source`／`custom_tile_url`／`custom_attribution`／`center`／`zoom`／`follow`／

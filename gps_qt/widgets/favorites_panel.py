@@ -54,12 +54,13 @@ class FavoritesPanel(QFrame):
     # 清單內容或篩選模式變動（新增/改名/刪除/切換模式），讓地圖重畫最愛圖層。
     favorites_changed = Signal()
 
-    def __init__(self, pin_provider, route_provider, mode_provider, parent=None):
+    def __init__(self, pin_provider, route_provider, mode_provider, speed_provider, parent=None):
         super().__init__(parent)
         self.setObjectName("card")
         self.setFrameShape(QFrame.StyledPanel)
         self._pin_provider = pin_provider
         self._route_provider = route_provider
+        self._speed_provider = speed_provider
         self._mode_provider = mode_provider
         # 讀檔有狀況（檔案壞掉已備份、略過了格式不對的項目）時的說明，建構期間
         # 還沒有地方可以顯示，由 MainWindow 在版面建好後寫進執行日誌。
@@ -118,7 +119,12 @@ class FavoritesPanel(QFrame):
         row_layout.setContentsMargins(4, 2, 4, 2)
         name_label = theme.mark_class(_ElidingLabel(fav["name"]), "bold")
         row_layout.addWidget(name_label, 1)
-        preview = f"{fav['lat']:.4f}, {fav['lon']:.4f}" if fav["type"] == "pin" else f"{len(fav['route'])} 個節點"
+        if fav["type"] == "pin":
+            preview = f"{fav['lat']:.4f}, {fav['lon']:.4f}"
+        else:
+            preview = f"{len(fav['route'])} 個節點"
+            if "speed_kmh" in fav:
+                preview += f"・{fav['speed_kmh']:g} km/h"
         preview_label = _fix_to_hint(QLabel(preview), extra=4)
         row_layout.addWidget(preview_label)
         load_btn = _fix_to_hint(QPushButton("載入"))
@@ -157,7 +163,10 @@ class FavoritesPanel(QFrame):
         name, ok = QInputDialog.getText(self, "儲存最愛", "請輸入路線名稱：", text="我的路線")
         if not ok or not name:
             return
-        self.favorites.append({"type": "route", "name": name, "route": [list(r) for r in route]})
+        self.favorites.append({
+            "type": "route", "name": name, "route": [list(r) for r in route],
+            "speed_kmh": self._speed_provider(),
+        })
         self._save()
 
     def _import_kml(self):
