@@ -13,7 +13,9 @@ PinDrift 是一個 Python 桌面工具，透過 `pymobiledevice3` 模擬 iPhone�
 
 狀態存在兩個 JSON 檔（皆已列入 `.gitignore`），位置由 [paths.py](gps_qt/paths.py) 的
 `data_file()` 決定：一律放在執行檔所在的資料夾（直接跑原始碼時是專案根目錄），
-整包搬走設定就跟著走。`save_settings()`／`save_favorites()` 共用的 `_write_json()`
+整包搬走設定就跟著走。同一個資料夾還會有記錄檔 `pindrift.log*`、圖磚快取 `tile_cache/`、
+讀檔失敗的備份 `pindrift_*.corrupt-*.json` 與寫入中途的 `pindrift_*.json.tmp`，全部列入 `.gitignore`
+（都是個人資料）；新增任何寫進這個資料夾的檔案，都要一併加進 `.gitignore` 與 README 的檔案結構。`save_settings()`／`save_favorites()` 共用的 `_write_json()`
 **只攔 `OSError` 並回傳錯誤訊息字串（成功回傳 `None`）**，不丟例外——放在唯讀位置時
 存檔失敗不能讓 `closeEvent()` 整個炸掉；序列化失敗則照常拋 `TypeError`，那是程式的 bug。
 寫入是**先序列化、寫到 `.tmp` 再 `os.replace()`**，序列化失敗或寫到一半當機都不會留下被清空的原檔。
