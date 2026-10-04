@@ -154,14 +154,26 @@ function onPopupOpen(e) {
   if (!element) {
     return;
   }
-  var button = element.querySelector(".pt-delete");
-  if (!button) {
+  var deleteButton = element.querySelector(".pt-delete");
+  if (!deleteButton) {
     return;
   }
+  bindPopupButton(deleteButton, function (index) {
+    bridge.on_point_delete_requested(index);
+  });
+  element.querySelectorAll(".pt-insert").forEach(function (button) {
+    var after = button.getAttribute("data-after") === "1";
+    bindPopupButton(button, function (index) {
+      bridge.on_point_insert_requested(index, after);
+    });
+  });
+}
+
+function bindPopupButton(button, send) {
   button.disabled = state.locked;
   button.addEventListener("click", function () {
     if (bridge && !state.locked) {
-      bridge.on_point_delete_requested(parseInt(button.getAttribute("data-idx"), 10));
+      send(parseInt(button.getAttribute("data-idx"), 10));
     }
     map.closePopup();
   });
@@ -246,6 +258,10 @@ function pointPopupHtml(index, point) {
   var note = point[2] ? escapeHtml(point[2]) : "（無備註）";
   return '<div class="pt-title">#' + (index + 1) + "　" + note + "</div>" +
     '<div class="pt-coord">' + point[0].toFixed(6) + ", " + point[1].toFixed(6) + "</div>" +
+    '<div class="pt-actions">' +
+    '<button type="button" class="pt-insert" data-after="0" data-idx="' + index + '">前面新增</button>' +
+    '<button type="button" class="pt-insert" data-after="1" data-idx="' + index + '">後面新增</button>' +
+    "</div>" +
     '<button type="button" class="pt-delete" data-idx="' + index + '">刪除此點</button>';
 }
 

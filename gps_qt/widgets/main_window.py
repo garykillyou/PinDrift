@@ -298,6 +298,7 @@ class MainWindow(QMainWindow):
         self.map_panel.map_clicked.connect(self._on_map_clicked)
         self.map_panel.point_moved.connect(self.route_panel.move_point)
         self.map_panel.point_delete_requested.connect(self.route_panel.delete_point)
+        self.map_panel.point_insert_requested.connect(self.route_panel.insert_adjacent)
         self.map_panel.pin_dragged.connect(self._apply_map_coordinates)
         self.map_panel.favorite_activated.connect(self._on_map_favorite_activated)
         self.map_panel.location_searched.connect(self._on_location_searched)

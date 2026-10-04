@@ -88,3 +88,53 @@ def test_unlocking_restores_editing(panel):
     # Assert
     assert len(panel.route) == 2
     assert panel.add_btn.isEnabled()
+
+
+def test_insert_after_puts_midpoint_between_neighbors(panel):
+    # Act
+    panel.insert_adjacent(0, after=True)
+
+    # Assert：插在第 0 與第 1 個點之間，取中點，後面的點往後移
+    assert len(panel.route) == 4
+    assert panel.route[1][:2] == pytest.approx([24.0005, 120.0])
+    assert panel.route[2] == ROUTE[1]
+
+
+def test_insert_before_puts_midpoint_between_neighbors(panel):
+    # Act
+    panel.insert_adjacent(2, after=False)
+
+    # Assert
+    assert panel.route[2][:2] == pytest.approx([24.0015, 120.0])
+    assert panel.route[3] == ROUTE[2]
+
+
+def test_insert_at_ends_extends_along_the_end_segment(panel):
+    # Act
+    panel.insert_adjacent(0, after=False)
+    panel.insert_adjacent(len(panel.route) - 1, after=True)
+
+    # Assert：沿端點線段方向延伸同樣的長度
+    assert panel.route[0][:2] == pytest.approx([23.999, 120.0])
+    assert panel.route[-1][:2] == pytest.approx([24.003, 120.0])
+
+
+def test_insert_is_clamped_to_valid_coordinates(qapp):
+    # Arrange
+    edge = RoutePanel([[89.9995, 179.9995, ""], [89.9999, 179.9999, ""]])
+
+    # Act
+    edge.insert_adjacent(1, after=True)
+
+    # Assert
+    assert edge.route[-1][0] <= 90.0 and edge.route[-1][1] <= 180.0
+
+
+def test_insert_ignored_when_locked_or_row_invalid(panel):
+    # Act
+    panel.insert_adjacent(9, after=True)
+    panel.set_locked(True)
+    panel.insert_adjacent(0, after=True)
+
+    # Assert
+    assert panel.route == ROUTE

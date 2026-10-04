@@ -82,6 +82,7 @@ class MapBridge(QObject):
     map_clicked = Signal(float, float)
     point_dragged = Signal(int, float, float)
     point_delete_requested = Signal(int)
+    point_insert_requested = Signal(int, bool)  # 節點序號, 是否插在後面
     pin_dragged = Signal(float, float)
     favorite_activated = Signal(int)
     view_changed = Signal(float, float, int)
@@ -100,6 +101,10 @@ class MapBridge(QObject):
     @Slot(int)
     def on_point_delete_requested(self, index):
         self.point_delete_requested.emit(index)
+
+    @Slot(int, bool)
+    def on_point_insert_requested(self, index, after):
+        self.point_insert_requested.emit(index, after)
 
     @Slot(float, float)
     def on_pin_dragged(self, lat, lon):

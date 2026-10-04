@@ -126,6 +126,18 @@ class RouteTableModel(QAbstractTableModel):
         self.endInsertRows()
         self._notify_changed()
 
+    def insert_point_at(self, row, point):
+        """在 row 這個位置插入一個點，原本 row 以後的點往後移。"""
+        if not (0 <= row <= len(self._route)):
+            return
+        self.beginInsertRows(QModelIndex(), row, row)
+        self._route.insert(row, point)
+        self.endInsertRows()
+        # 後面所有列的「#」欄位顯示需要重新整理
+        if row + 1 < len(self._route):
+            self.dataChanged.emit(self.index(row + 1, COL_INDEX), self.index(len(self._route) - 1, COL_INDEX))
+        self._notify_changed()
+
     def remove_point(self, row):
         if not (0 <= row < len(self._route)):
             return

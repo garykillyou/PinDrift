@@ -3,13 +3,14 @@
 表格為什麼用 QTableView 取代手刻的虛擬化清單，見 gps_qt/models.py 的說明。
 """
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QMessageBox, QPushButton, QTableView, QVBoxLayout,
+    QMenu, QMessageBox, QPushButton, QTableView, QVBoxLayout,
 )
 
 from .. import theme
-from ..geo import route_length
+from ..geo import adjacent_point, route_length
 from ..models import COL_DELETE, COL_INDEX, COL_LAT, COL_LON, COL_NOTE, DeleteButtonDelegate, RouteTableModel
 
 SPEED_PRESETS = [("步行 5 km/h", 5), ("慢跑 10 km/h", 10), ("騎車 20 km/h", 20), ("開車 40 km/h", 40)]
@@ -93,6 +94,8 @@ class RoutePanel(QFrame):
         self.delete_delegate = DeleteButtonDelegate(self.table)
         self.delete_delegate.delete_requested.connect(self.delete_point)
         self.table.setItemDelegateForColumn(COL_DELETE, self.delete_delegate)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._show_row_menu)
         layout.addWidget(self.table)
 
         self._update_info()
@@ -144,6 +147,30 @@ class RoutePanel(QFrame):
         if self._locked:
             return
         self.model.set_coordinates(row, lat, lon)
+
+    def insert_adjacent(self, row, after):
+        """在第 row 個點的前面（after=False）或後面（after=True）新增一個點。
+
+        表格的右鍵選單與地圖節點的彈出視窗都走這裡，兩邊共用同一道鎖定檢查。
+        新點的位置見 geo.adjacent_point()。
+        """
+        route = self.model.route
+        if self._locked or not (0 <= row < len(route)):
+            return
+        point = adjacent_point(route, row, after)
+        insert_row = row + 1 if after else row
+        self.model.insert_point_at(insert_row, [point[0], point[1], "新增點"])
+        self.table.selectRow(insert_row)
+
+    def _show_row_menu(self, pos):
+        index = self.table.indexAt(pos)
+        if self._locked or not index.isValid():
+            return
+        row = index.row()
+        menu = QMenu(self.table)
+        menu.addAction("在前面新增點", lambda: self.insert_adjacent(row, False))
+        menu.addAction("在後面新增點", lambda: self.insert_adjacent(row, True))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def delete_point(self, row):
         """刪除某個點。剩 2 個點時直接忽略：路線至少要兩點才能內插，UI 層先擋掉。

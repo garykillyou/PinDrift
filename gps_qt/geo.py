@@ -29,6 +29,33 @@ def haversine(lat1, lon1, lat2, lon2):
 
 METERS_PER_DEGREE = math.radians(1) * 6371000  # 緯度 1 度約 111194.9 公尺
 
+DEFAULT_EXTEND_DEG = 0.001  # 路線只有一個點、沒有線段可延伸時的偏移量（約 110 公尺）
+
+
+def adjacent_point(route, row, after):
+    """回傳在 route[row] 前面（after=False）或後面（after=True）新增的座標 [lat, lon]。
+
+    兩點之間插入時取中點；插在路線兩端時沿著端點線段的方向延伸同樣的長度，
+    路線只有一個點則偏移 DEFAULT_EXTEND_DEG。結果夾在合法經緯度內。
+    """
+    lat, lon = route[row][0], route[row][1]
+    neighbor_row = row + 1 if after else row - 1
+    if 0 <= neighbor_row < len(route):
+        other = route[neighbor_row]
+        return [(lat + other[0]) / 2, (lon + other[1]) / 2]
+
+    # 這一側沒有鄰居：以另一側的鄰居定出方向，往外延伸。
+    behind_row = row - 1 if after else row + 1
+    if 0 <= behind_row < len(route):
+        behind = route[behind_row]
+        d_lat, d_lon = lat - behind[0], lon - behind[1]
+    else:
+        sign = 1 if after else -1
+        d_lat, d_lon = sign * DEFAULT_EXTEND_DEG, sign * DEFAULT_EXTEND_DEG
+    new_lat = max(-LAT_LIMIT, min(LAT_LIMIT, lat + d_lat))
+    new_lon = max(-LON_LIMIT, min(LON_LIMIT, lon + d_lon))
+    return [new_lat, new_lon]
+
 
 def _perpendicular_distance_m(point, start, end):
     """point 到 start-end 線段的垂直距離（公尺）。

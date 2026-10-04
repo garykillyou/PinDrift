@@ -143,7 +143,7 @@ PinDrift/
     ├── geo.py               # haversine()、RouteSampler（依弧長等距切步、按需算單點）、
     │                        # douglas_peucker()、simplify_route()（保留備註點的抽稀）、
     │                        # cumulative_distances()、route_length()、
-    │                        # is_valid_latitude()／is_valid_longitude()
+    │                        # is_valid_latitude()／is_valid_longitude()、adjacent_point()（前後插點的座標）
     ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
@@ -517,6 +517,15 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 - `RoutePanel.delete_point()` 在只剩 2 個點時直接 return：路線至少要兩點才能內插，UI 層先擋掉。
   表格的刪除欄與地圖節點彈出視窗的「刪除此點」都走這個方法，兩邊共用同一道下限檢查——新增其他
   刪除入口時也要接到這裡，不要各自呼叫 `model.remove_point()`。
+- **在某點前／後插入新點**走 `RoutePanel.insert_adjacent(row, after)`，入口有兩個：表格右鍵選單
+  （`_show_row_menu()`，`customContextMenuRequested`）與地圖節點彈出視窗的「前面新增／後面新增」
+  （`bridge.on_point_insert_requested(index, after)` → `MapPanel.point_insert_requested` →
+  `MainWindow` 接到 `insert_adjacent`）。同樣先檢查 `_locked` 與列範圍，新增其他插入入口也要接到這裡，
+  不要直接呼叫 `model.insert_point_at()`。新點座標由純函式 `geo.adjacent_point()` 決定：兩點之間取中點
+  （路線形狀不變，所以不必歸零 `travelled_m`，也不走 `modelReset`）；路線兩端沿端點線段方向延伸同樣長度，
+  只有一個點則偏移 `DEFAULT_EXTEND_DEG`；結果夾在合法經緯度內。`insert_point_at()` 要記得重新整理後面
+  各列的「#」欄（跟 `remove_point()` 同理）。`map.js` 的彈出視窗按鈕共用 `bindPopupButton()`，
+  新增按鈕時沿用，鎖定狀態才會一致。
 - 標題列除了「新增點」還有「清空座標點」（`model.clear()`）：清空後路線只剩 0 個點，要重新在地圖上
   點或載入最愛才能再開始移動。清空前一定會先 `QMessageBox.question()` 確認：自動存檔會在兩秒內把
   空路線寫進設定，誤按就救不回來。
