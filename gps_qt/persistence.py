@@ -173,6 +173,17 @@ def normalize_favorite(fav):
     return None
 
 
+def upsert_favorite(favs, fav):
+    """回傳加入 fav 後的新清單；已有同類型、同名稱的最愛時，在原位置覆蓋第一筆。
+
+    只比對同類型：地點與路線分開顯示，同名的地點不該被路線蓋掉。
+    """
+    for i, existing in enumerate(favs):
+        if existing["type"] == fav["type"] and existing["name"] == fav["name"]:
+            return [*favs[:i], fav, *favs[i + 1:]]
+    return [*favs, fav]
+
+
 def load_saved_route(settings):
     """讀取上次關閉程式前的路線座標點；沒有存檔或格式不對就回傳 None，讓呼叫端 fallback 回預設路線。"""
     raw = settings.get("last_route")

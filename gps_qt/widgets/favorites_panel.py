@@ -6,14 +6,22 @@ QListWidget + 自訂 item widget：最愛清單項目數通常不多，不像路
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from .. import persistence, theme
+from .route_panel import SPEED_MAX_KMH, SPEED_MIN_KMH
 
 RENAME_DIALOG_MIN_WIDTH = 400
 RENAME_DIALOG_PADDING = 120  # 容納對話框邊距與輸入框內距，避免文字貼齊邊緣
+
+
+def _dialog_width(dialog, text):
+    """依名稱長度決定編輯對話框的寬度，長名稱不會被輸入框截掉。"""
+    text_width = dialog.fontMetrics().horizontalAdvance(text)
+    return max(RENAME_DIALOG_MIN_WIDTH, text_width + RENAME_DIALOG_PADDING)
 
 
 def _fix_to_hint(widget, extra=0):
@@ -47,6 +55,53 @@ class _ElidingLabel(QLabel):
         super().resizeEvent(event)
         elided = self.fontMetrics().elidedText(self._full_text, Qt.ElideRight, self.width())
         self.setText(elided)
+
+
+class _RouteEditDialog(QDialog):
+    """路線最愛的編輯對話框：名稱 + 儲存的速度。
+
+    速度是選填的（KML 匯入、舊版存的路線沒有），所以用核取方塊表示「載入時要不要
+    還原速度」；取消勾選就把這個欄位拿掉，載入時不改動目前的速度。
+    """
+
+    def __init__(self, fav, default_speed, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("編輯路線")
+        form = QFormLayout(self)
+
+        self.name_edit = QLineEdit(fav["name"])
+        form.addRow("名稱：", self.name_edit)
+
+        speed_row = QHBoxLayout()
+        self.speed_check = QCheckBox("載入時套用速度")
+        self.speed_check.setChecked("speed_kmh" in fav)
+        speed_row.addWidget(self.speed_check)
+        self.speed_spin = QDoubleSpinBox()
+        self.speed_spin.setRange(SPEED_MIN_KMH, SPEED_MAX_KMH)
+        self.speed_spin.setSuffix(" km/h")
+        # 沒存過速度時預設帶目前的速度，勾選後不必再從頭輸入。
+        self.speed_spin.setValue(fav.get("speed_kmh", default_speed))
+        self.speed_spin.setEnabled(self.speed_check.isChecked())
+        self.speed_check.toggled.connect(self.speed_spin.setEnabled)
+        speed_row.addWidget(self.speed_spin, 1)
+        form.addRow("速度：", speed_row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self._ok_btn = buttons.button(QDialogButtonBox.Ok)
+        self.name_edit.textChanged.connect(lambda text: self._ok_btn.setEnabled(bool(text.strip())))
+        form.addRow(buttons)
+
+        self.resize(_dialog_width(self, fav["name"]), self.sizeHint().height())
+
+    def edited(self, fav):
+        """依對話框內容產生新的最愛（不改動傳入的 fav）。"""
+        result = {k: v for k, v in fav.items() if k != "speed_kmh"}
+        result["name"] = self.name_edit.text().strip()
+        if self.speed_check.isChecked():
+            result["speed_kmh"] = self.speed_spin.value()
+        return result
 
 
 class FavoritesPanel(QFrame):
@@ -131,7 +186,7 @@ class FavoritesPanel(QFrame):
         load_btn.clicked.connect(lambda checked=False, f=fav: self.load_requested.emit(f))
         row_layout.addWidget(load_btn)
         rename_btn = _fix_to_hint(QPushButton("編輯"))
-        rename_btn.clicked.connect(lambda checked=False, idx=i: self._rename(idx))
+        rename_btn.clicked.connect(lambda checked=False, idx=i: self._edit(idx))
         row_layout.addWidget(rename_btn)
         delete_btn = QPushButton("刪除")
         theme.mark_class(delete_btn, "danger")
@@ -163,7 +218,8 @@ class FavoritesPanel(QFrame):
         name, ok = QInputDialog.getText(self, "儲存最愛", "請輸入路線名稱：", text="我的路線")
         if not ok or not name:
             return
-        self.favorites.append({
+        # 同名的路線最愛直接覆蓋（保留在清單裡的原位置），方便反覆更新同一條路線。
+        self.favorites = persistence.upsert_favorite(self.favorites, {
             "type": "route", "name": name, "route": [list(r) for r in route],
             "speed_kmh": self._speed_provider(),
         })
@@ -188,15 +244,27 @@ class FavoritesPanel(QFrame):
         self.favorites.append({"type": "route", "name": name, "route": route})
         self._save()
 
+    def _edit(self, i):
+        if self.favorites[i]["type"] == "route":
+            self._edit_route(i)
+        else:
+            self._rename(i)
+
+    def _edit_route(self, i):
+        fav = self.favorites[i]
+        dialog = _RouteEditDialog(fav, self._speed_provider(), self)
+        if not dialog.exec():
+            return
+        self.favorites[i] = dialog.edited(fav)
+        self._save()
+
     def _rename(self, i):
         fav = self.favorites[i]
         dialog = QInputDialog(self)
         dialog.setWindowTitle("重新命名")
         dialog.setLabelText("請輸入新名稱：")
         dialog.setTextValue(fav["name"])
-        text_width = dialog.fontMetrics().horizontalAdvance(fav["name"])
-        width = max(RENAME_DIALOG_MIN_WIDTH, text_width + RENAME_DIALOG_PADDING)
-        dialog.resize(width, dialog.sizeHint().height())
+        dialog.resize(_dialog_width(dialog, fav["name"]), dialog.sizeHint().height())
         ok = dialog.exec()
         name = dialog.textValue()
         if not ok or not name:

@@ -22,6 +22,9 @@ LOOP_STYLE_LABELS = [("來回（原路折返）", LOOP_STYLE_BOUNCE), ("迴圈�
 
 
 DEFAULT_SPEED_KMH = 20.0
+# 速度欄位的範圍；最愛清單編輯路線速度時共用同一組，兩邊才不會一邊存得進去、另一邊被夾掉。
+SPEED_MIN_KMH = 0.1
+SPEED_MAX_KMH = 300.0
 
 
 class RoutePanel(QFrame):
@@ -49,7 +52,7 @@ class RoutePanel(QFrame):
         custom_row = QHBoxLayout()
         custom_row.addWidget(QLabel("自訂 km/h："))
         self.speed_spin = QDoubleSpinBox()
-        self.speed_spin.setRange(0.1, 300.0)
+        self.speed_spin.setRange(SPEED_MIN_KMH, SPEED_MAX_KMH)
         self.speed_spin.setValue(initial_speed)
         # 預設按鈕也是走 setValue()，同一條 signal 就涵蓋兩種改速度的入口
         self.speed_spin.valueChanged.connect(lambda _value: self._update_info())

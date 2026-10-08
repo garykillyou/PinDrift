@@ -42,7 +42,11 @@ widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `clo
   路線最愛有選填的 `speed_kmh`（儲存當下的速度）：`normalize_favorite()` 只接受正的有限數值，
   不合法就**只拿掉這個欄位**、不略過整筆最愛（所以不觸發備份）；沒有這個欄位（舊檔、KML 匯入）
   的路線載入時不改動速度欄位。`FavoritesPanel` 由 `speed_provider` 取得儲存時的速度，
-  `MainWindow._load_favorite()` 負責載入時還原。
+  `MainWindow._load_favorite()` 負責載入時還原。清單上的「編輯」對路線最愛開
+  `_RouteEditDialog`（名稱 + 「載入時套用速度」核取方塊與速度欄位，範圍共用 `route_panel` 的
+  `SPEED_MIN_KMH`／`SPEED_MAX_KMH`；取消勾選就拿掉 `speed_kmh`），地點最愛仍只改名。
+  「儲存目前路線」走 `persistence.upsert_favorite()`：同類型同名的最愛在原位置覆蓋（不跳確認，
+  使用者明確要求），地點與路線分開比對；儲存地點與 KML 匯入仍是一律新增。
 - `pindrift_settings.json`：`theme`（主題偏好）、`window`（視窗幾何 + `maximized`）、
   `last_route`（上次的路線座標點）、`speed_kmh`（上次的移動速度）、
   `map`（地圖的 `tile_source`／`custom_tile_url`／`custom_attribution`／`center`／`zoom`／`follow`／
