@@ -146,6 +146,7 @@ PinDrift/
     ├── main.py              # 進入點：QApplication + qasync 事件迴圈
     ├── paths.py             # 資源／使用者資料的路徑解析（打包後兩者要分開）
     ├── applog.py            # 記錄檔 pindrift.log、日誌時間戳記、未處理例外的攔截
+    ├── i18n.py              # 載入 Qt 內建的 qtbase_zh_TW 翻譯（標準對話框按鈕顯示中文）
     ├── tunneld.py           # tunneld 偵測 + 提權啟動；也是 tunneld 子行程的本體
     ├── theme.py             # qt-material 主題套用、字級覆寫、danger/success 語意色
     ├── geo.py               # haversine()、RouteSampler（依弧長等距切步、按需算單點）、
@@ -663,3 +664,7 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 - **翻譯與除錯資源佔掉 130 MB**，spec 用 `_is_unused_qt_data()` 濾掉 `*.debug.pak`、
   53 種 WebEngine 語系與 157 個 Qt `.qm` 裡用不到的那些。要多支援一種語系就改
   `KEEP_WEBENGINE_LOCALES` 與 `KEEP_QT_TRANSLATION_SUFFIXES`。
+  `_zh_TW` **不能拿掉**：[i18n.py](gps_qt/i18n.py) 在 `main()` 建好 `QApplication` 後載入
+  `qtbase_zh_TW.qm`，`QMessageBox`／`QInputDialog`／`QDialogButtonBox` 的標準按鈕才會是
+  「確定」「取消」「是」「否」；少了它不會報錯，只會在記錄檔留一筆警告、按鈕默默變回英文。
+  翻譯要在建立任何 widget 之前安裝，標準按鈕的文字是建立當下就翻好的。

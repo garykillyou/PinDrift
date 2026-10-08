@@ -14,7 +14,7 @@ import PySide6.QtWebEngineWidgets  # noqa: F401  isort:skip
 from PySide6.QtWidgets import QApplication
 from qasync import QEventLoop
 
-from . import applog, tile_scheme
+from . import applog, i18n, tile_scheme
 from .widgets.main_window import MainWindow
 
 
@@ -27,6 +27,8 @@ def main():
     # 自訂 scheme 只能在建立 QApplication 之前登記，晚了 QtWebEngine 會直接忽略。
     tile_scheme.register_scheme()
     app = QApplication(sys.argv)
+    # 要在建立任何 widget 之前安裝，標準按鈕的文字是建立當下就翻好的。
+    translator = i18n.install_qt_translation(app)  # noqa: F841 保留參照，避免被 GC
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
 
