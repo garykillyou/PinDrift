@@ -287,6 +287,43 @@ def load_speed_kmh(settings, default):
     return float(value) if _is_finite_number(value) and value > 0 else default
 
 
+# 可調整大小的 QSplitter（見 MainWindow）：主分隔線依視窗寬度切換方向，兩個方向各記一份。
+SPLITTER_KEYS = ("main_horizontal", "main_vertical", "left")
+# 單一區塊的像素上限；QSplitter.setSizes() 收到超出 C int 的值會丟 OverflowError。
+SPLITTER_SIZE_MAX = 100_000
+
+
+def _splitter_sizes(value):
+    """[a, b] 兩個正整數；合法回傳新的串列，不合法回傳 None。
+
+    不接受 0：分隔線都設成不可收合，0 只會來自手改的設定檔，套回去會讓整個區塊
+    （例如放控制按鈕的左欄）一開啟就不見。bool 是 int 的子類別，要另外排除。
+    """
+    if not isinstance(value, list) or len(value) != 2:
+        return None
+    if not all(isinstance(v, int) and not isinstance(v, bool) and 0 < v <= SPLITTER_SIZE_MAX
+               for v in value):
+        return None
+    return list(value)
+
+
+def load_splitter_sizes(settings):
+    """讀出 settings["splitters"]，只留下合法的欄位後放回 settings 並回傳。
+
+    值是 QSplitter.sizes() 的像素值，套用時 Qt 會依目前可用空間等比例換算，
+    所以視窗大小跟上次不同也只是比例相同。沒有存過的欄位不放，由呼叫端用預設的等分。
+    """
+    raw = settings.get("splitters")
+    result = {}
+    if isinstance(raw, dict):
+        for key in SPLITTER_KEYS:
+            sizes = _splitter_sizes(raw.get(key))
+            if sizes is not None:
+                result[key] = sizes
+    settings["splitters"] = result
+    return result
+
+
 # https://discord.com/api/webhooks/<id>/<token>；舊網域 discordapp.com 與 ptb／canary 版本複製出來的
 # 也接受。發到論壇頻道要在後面加 ?thread_id=<討論串 id>。
 _WEBHOOK_URL_RE = re.compile(

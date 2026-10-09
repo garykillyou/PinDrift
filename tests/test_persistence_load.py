@@ -156,6 +156,47 @@ def test_load_speed_kmh_keeps_valid_value():
     assert persistence.load_speed_kmh({}, 20.0) == 20.0
 
 
+def test_load_splitter_sizes_keeps_valid_entries():
+    # Arrange
+    settings = {"splitters": {"main_horizontal": [600, 400], "left": [1, 300]}}
+
+    # Act
+    result = persistence.load_splitter_sizes(settings)
+
+    # Assert
+    assert result == {"main_horizontal": [600, 400], "left": [1, 300]}
+    assert settings["splitters"] is result
+
+
+@pytest.mark.parametrize("value", [
+    [1, 2, 3], [100], "600,400", [600.5, 400], [True, 400], [-1, 400], [0, 0], [0, 300],
+    [persistence.SPLITTER_SIZE_MAX + 1, 400], None,
+])
+def test_load_splitter_sizes_drops_invalid_entries(value):
+    # Arrange
+    settings = {"splitters": {"left": value, "main_vertical": [300, 300]}}
+
+    # Act
+    result = persistence.load_splitter_sizes(settings)
+
+    # Assert
+    assert result == {"main_vertical": [300, 300]}
+
+
+@pytest.mark.parametrize("raw", [None, [], "x", 5])
+def test_load_splitter_sizes_falls_back_to_empty_dict(raw):
+    settings = {} if raw is None else {"splitters": raw}
+
+    assert persistence.load_splitter_sizes(settings) == {}
+    assert settings["splitters"] == {}
+
+
+def test_load_splitter_sizes_ignores_unknown_keys():
+    settings = {"splitters": {"other": [1, 2]}}
+
+    assert persistence.load_splitter_sizes(settings) == {}
+
+
 ROUTE = [[24.0, 120.0, ""], [24.1, 120.1, ""]]
 
 

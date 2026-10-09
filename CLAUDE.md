@@ -22,11 +22,12 @@ PinDrift 是一個 Python 桌面工具，透過 `pymobiledevice3` 模擬 iPhone�
 各呼叫端自己決定提示方式：切換主題、設定對話框按「確定」與自動存檔走執行日誌（自動存檔同樣的錯誤
 只記一次，放在唯讀位置時才不會每兩秒洗版一次）、存最愛與關閉視窗走 `QMessageBox`（視窗都要關了，寫進日誌等於沒說）。
 新增存檔入口時要記得接這個回傳值。
-設定除了關閉視窗時存，**路線、速度、地圖設定變動後也會自動存檔**（`MainWindow._setup_autosave()`），
+設定除了關閉視窗時存，**路線、速度、地圖設定變動與拖曳分隔線後也會自動存檔**（`MainWindow._setup_autosave()`；
+分隔線由 `SplitterMemory` 的 `on_changed` 排程），
 程式當掉或被強制結束才不會把上次的路線弄丟。計時器是 `AUTOSAVE_DELAY_MS`(2000) 的 single-shot，
 **第一次變動時啟動、期間的變動不重新計時**——若改成每次都重新計時，連續拖曳時會一直等不到空檔。
 地圖設定是 `MapPanel`／`RoutePlanner` 就地改 `settings["map"]`，改完 emit `settings_changed`；
-平移／縮放視野刻意不觸發（跟隨模式下每秒都在變），只在關閉視窗時存。視窗幾何、路線、速度這些只存在
+平移／縮放視野刻意不觸發（跟隨模式下每秒都在變），只在關閉視窗時存。視窗幾何、分隔線大小、路線、速度這些只存在
 widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `closeEvent()` 共用。
 執行日誌除了顯示在視窗（每行前面加 `HH:MM:SS`），也會經由 [applog.py](gps_qt/applog.py) 寫進同一個
 資料夾的 `pindrift.log`（1 MB 輪替、保留 3 份，已列入 `.gitignore`）。`main()` 最先呼叫
@@ -52,7 +53,9 @@ widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `clo
   `map`（地圖的 `tile_source`／`custom_tile_url`／`custom_attribution`／`center`／`zoom`／`follow`／
   `routing_costing`／`simplify_m`，由 `persistence.load_map_settings()` 補齊預設值）、
   `discord_webhook`（抵達端點時的 Discord 通知網址，空字串代表不通知，由
-  `persistence.load_discord_webhook()` 檢查；見下方「Discord 通知」）。
+  `persistence.load_discord_webhook()` 檢查；見下方「Discord 通知」）、
+  `splitters`（使用者拖曳過的分隔線大小，`main_horizontal`／`main_vertical`／`left` 各一組
+  `[a, b]` 像素值，由 `persistence.load_splitter_sizes()` 檢查；見下方「響應式版面」）。
   **每個欄位讀進來都要先檢查型別與範圍**，設定檔可能被手改壞：`window` 走
   `window_geometry.normalize_window()`、`speed_kmh` 走 `persistence.load_speed_kmh()`、`last_route` 走
   `load_saved_route()`、`map` 走 `load_map_settings()`（`center` 要在經緯度範圍內、`zoom` 在
@@ -80,7 +83,7 @@ python -m pymobiledevice3 remote tunneld
 # GPSSession 的續走／改速度／循環走法／時間間隔／停止立即生效／例外回報／tunneld 提示、KML 匯入、
 # 網路請求的節流與過期過濾、移動中鎖定路線表格與清空確認、固定座標的確定通知、記錄檔與例外攔截、
 # 圖磚選擇與自訂版權標示的 escape、圖磚快取的路徑／新鮮度／容量上限、模擬中關閉視窗的恢復流程、
-# Discord 通知的網址檢查／payload／失敗說明、設定對話框）
+# Discord 通知的網址檢查／payload／失敗說明、設定對話框、分隔線大小的記錄與還原）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -115,7 +118,7 @@ tunneld 的主控台輸出），已凍結時跑同一個資料夾裡的 `PinDrif
 跑 `python -m pymobiledevice3 remote tunneld`，打包版改成「重新開啟 PinDrift 讓它自動啟動，或以系統
 管理員身分執行同資料夾的 `PinDrift-tunneld.exe`」。任何給使用者看的指令都要想一下打包版有沒有 Python。
 
-測試以不需要 Qt 事件迴圈的邏輯為主（[tests/](tests)）；少數 widget（`RoutePanel`、`PinPanel`、`SettingsDialog`）以
+測試以不需要 Qt 事件迴圈的邏輯為主（[tests/](tests)）；少數 widget（`RoutePanel`、`PinPanel`、`SettingsDialog`、`SplitterMemory` 用的 `QSplitter`）以
 offscreen 平台建立來測，地圖頁面與 `MainWindow` 沒有自動化測試（`MainWindow` 需要 QtWebEngine；
 要測它的行為就像 `CloseGuard` 那樣抽成只用 QtCore 的小類別）。**需要 Q*Application 的測試一律用
 [conftest.py](conftest.py) 的 `qapp` fixture**：一個行程只能有一個，而且若先建了 `QCoreApplication`，
@@ -160,6 +163,7 @@ PinDrift/
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
     ├── close_guard.py       # CloseGuard：模擬中關閉視窗時先恢復真實定位再關
+    ├── splitter_memory.py   # SplitterMemory：記住使用者拖曳過的分隔線大小
     ├── tiles.py             # 圖磚來源清單 + resolve_tile()（自訂版權標示在這裡 escape）
     ├── tile_cache.py        # 圖磚本機快取的純函式（URL 改寫、檔案路徑、新鮮度、容量上限）
     ├── tile_scheme.py       # pdtile: scheme 處理器：快取優先，沒有才下載並存起來
@@ -532,7 +536,7 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 內，回傳 `None` 就代表無效、位置交給 Windows 決定。Qt6 預設開啟 High-DPI scaling，`QWidget.geometry()`
 拿到的座標本身就是邏輯像素，不需要手動做實體/邏輯像素換算。`MainWindow` 只在 `not self.isMaximized()`
 時才更新 `_normal_geometry`（`resizeEvent`/`moveEvent` 都會呼叫），因為最大化時的幾何不能當還原基準；
-`_collect_settings()` 用這份記錄的座標，連同 `last_route` 與 `speed_kmh` 一起寫回 `pindrift_settings.json`
+`_collect_settings()` 用這份記錄的座標，連同 `splitters`、`last_route` 與 `speed_kmh` 一起寫回 `pindrift_settings.json`
 （關閉視窗與自動存檔都走這裡）。
 
 ### 路線表格：QTableView 虛擬化
@@ -618,9 +622,16 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
 ### 響應式版面
 `MainWindow.resizeEvent()`（[main_window.py](gps_qt/widgets/main_window.py)）依視窗寬度是否超過 `WIDE_LAYOUT_BREAKPOINT`
 （1000px）切換 `QSplitter` 的方向（`Qt.Horizontal`/`Qt.Vertical`）。切換方向後一定要重新
-`setSizes([10**6, 10**6])`：`QSplitter` 換方向時沿用舊方向的像素值會變成不等寬/不等高，用兩個相同的
-大數字讓 Qt 依可用空間等比例換算成 50/50。執行日誌面板高度不手動計算，交給 `QVBoxLayout` 原生分配
-剩餘空間。整個中央 widget 再用 `QScrollArea(setWidgetResizable(True))` 包一層，視窗縮到很小時仍可捲動
+`setSizes()`：`QSplitter` 換方向時沿用舊方向的像素值會變成不等寬/不等高。左欄的執行日誌與最愛清單
+之間是另一個垂直的 `left_splitter`。兩個分隔線都 `setChildrenCollapsible(False)`：拖曳結果會存檔，
+允許收合的話左欄（控制按鈕）收掉後下次開啟仍是收合的，`load_splitter_sizes()` 也因此不接受 0。
+**使用者拖曳過的大小會記住**，由 [splitter_memory.py](gps_qt/splitter_memory.py) 的 `SplitterMemory`
+負責（只相依 `QSplitter`，有 offscreen 測試）：`watch()` 接 `splitterMoved`（只在使用者拖曳時發出，
+`setSizes()` 不會，所以套用存檔的值不會反過來蓋掉存檔）並排程自動存檔，`restore()` 在啟動時與主分隔線
+換方向時套用，`_collect_settings()` 再把 `sizes` 寫回 `settings["splitters"]`。主分隔線的兩個方向分開記
+（`_main_splitter_key()`，在拖曳當下才判斷方向），寬版的左右比例套到窄版的上下會很怪。存的是像素值，
+`setSizes()` 會依目前可用空間等比例換算；沒存過時主分隔線等分、左欄用 `LEFT_SPLIT_DEFAULT`（日誌 1：最愛 2）。
+整個中央 widget 再用 `QScrollArea(setWidgetResizable(True))` 包一層，視窗縮到很小時仍可捲動
 看到全部內容。
 
 右欄內部的垂直配額由 `MAP_STRETCH`(3) 與 `COORDS_STRETCH`(2) 決定，地圖另有 `MAP_MIN_HEIGHT`(320)

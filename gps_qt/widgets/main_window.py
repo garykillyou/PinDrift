@@ -16,6 +16,7 @@ from .. import applog, geo, persistence, theme, tunneld, window_geometry
 from ..close_guard import CloseGuard
 from ..notifier import DiscordNotifier
 from ..session import GPSSession
+from ..splitter_memory import SplitterMemory
 from .favorites_panel import FavoritesPanel
 from .map_panel import MapPanel
 from .pin_panel import PinPanel
@@ -40,6 +41,9 @@ WIDE_LAYOUT_BREAKPOINT = 1000
 MAP_STRETCH = 3
 COORDS_STRETCH = 2
 
+# 左欄「執行日誌 : 最愛清單」第一次開啟（還沒拖曳過）時的高度比例；最愛清單的每一列較高，給多一點。
+LEFT_SPLIT_DEFAULT = [10**6, 2 * 10**6]
+
 # 設定變動後最多等這麼久就自動存檔一次。計時器第一次變動時啟動、期間的變動
 # 不會重新計時，連續拖曳節點也只會每隔這段時間寫一次檔，而不是永遠等不到空檔。
 AUTOSAVE_DELAY_MS = 2000
@@ -60,6 +64,9 @@ class MainWindow(QMainWindow):
         # 回傳的就是 settings["map"] 本身，MapPanel 會就地更新它，closeEvent 一起寫回。
         self.map_settings = persistence.load_map_settings(self.settings)
         self.settings["discord_webhook"] = persistence.load_discord_webhook(self.settings)
+        self.splitter_memory = SplitterMemory(
+            persistence.load_splitter_sizes(self.settings), self._schedule_autosave
+        )
         self.discord_notifier = DiscordNotifier(self)
         self._coords_collapsed = False
 
@@ -138,6 +145,9 @@ class MainWindow(QMainWindow):
         outer_layout.addLayout(title_row)
 
         self.splitter = QSplitter(Qt.Horizontal)
+        # 不允許整欄收合：左欄放的是控制按鈕，收掉後使用者很難想到要從視窗邊緣拉回來，
+        # 而且拖曳結果會存檔，下次開啟仍是收合的。
+        self.splitter.setChildrenCollapsible(False)
         outer_layout.addWidget(self.splitter, 1)
 
         left_col = QWidget()
@@ -166,11 +176,19 @@ class MainWindow(QMainWindow):
         self.progress_label = QLabel("")
         left_layout.addWidget(self.progress_label)
 
-        left_layout.addWidget(theme.style_section_title(QLabel("執行日誌")))
+        # 執行日誌與最愛清單之間可以上下拖曳調整高度；不允許拖到整個消失，
+        # 否則使用者很難發現要從邊緣把它拉回來。
+        self.left_splitter = QSplitter(Qt.Vertical)
+        self.left_splitter.setChildrenCollapsible(False)
+        log_section = QWidget()
+        log_layout = QVBoxLayout(log_section)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.addWidget(theme.style_section_title(QLabel("執行日誌")))
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(2000)
-        left_layout.addWidget(self.log_view)
+        log_layout.addWidget(self.log_view)
+        self.left_splitter.addWidget(log_section)
 
         self.favorites_panel = FavoritesPanel(
             pin_provider=lambda: self.pin_panel.coordinates(),
@@ -179,7 +197,8 @@ class MainWindow(QMainWindow):
             speed_provider=lambda: self.route_panel.speed_spin.value(),
         )
         self.favorites_panel.load_requested.connect(self._load_favorite)
-        left_layout.addWidget(self.favorites_panel)
+        self.left_splitter.addWidget(self.favorites_panel)
+        left_layout.addWidget(self.left_splitter, 1)
 
         self.splitter.addWidget(left_col)
 
@@ -222,9 +241,12 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(right_col)
         self.splitter.setStretchFactor(0, 1)
         self.splitter.setStretchFactor(1, 1)
-        # setStretchFactor 只影響「resize 時多出來的空間」怎麼分配，初始寬度仍要
-        # 靠 setSizes() 指定；給兩個相同的大數字，Qt 會依可用空間等比例換算。
-        self.splitter.setSizes([10**6, 10**6])
+        # setStretchFactor 只影響「resize 時多出來的空間」怎麼分配，初始大小仍要
+        # 靠 setSizes() 指定：有上次拖曳的結果就套用，沒有就用預設比例。
+        self.splitter_memory.restore(self.splitter, self._main_splitter_key())
+        self.splitter_memory.restore(self.left_splitter, "left", default=LEFT_SPLIT_DEFAULT)
+        self.splitter_memory.watch(self.splitter, self._main_splitter_key)
+        self.splitter_memory.watch(self.left_splitter, lambda: "left")
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -556,8 +578,14 @@ class MainWindow(QMainWindow):
         new_orientation = Qt.Horizontal if wide else Qt.Vertical
         if self.splitter.orientation() != new_orientation:
             self.splitter.setOrientation(new_orientation)
-            # 換方向後舊的 sizes（另一軸的像素）沿用會變成不等寬/不等高，重設成等分。
-            self.splitter.setSizes([10**6, 10**6])
+            # 換方向後舊的 sizes（另一軸的像素）不能沿用，改套這個方向上次記下的值。
+            self.splitter_memory.restore(self.splitter, self._main_splitter_key())
+
+    def _main_splitter_key(self):
+        """主分隔線兩個方向的比例分開記：寬版的左右比例套到窄版的上下會很怪。"""
+        if self.splitter.orientation() == Qt.Horizontal:
+            return "main_horizontal"
+        return "main_vertical"
 
     def moveEvent(self, event):
         super().moveEvent(event)
@@ -597,10 +625,11 @@ class MainWindow(QMainWindow):
         self._last_autosave_error = error
 
     def _collect_settings(self):
-        """把只存在 widget 上的狀態（視窗幾何、路線、速度）寫回 self.settings。"""
+        """把只存在 widget 上的狀態（視窗幾何、分隔線、路線、速度）寫回 self.settings。"""
         win = dict(self._normal_geometry)
         win["maximized"] = self.isMaximized()
         self.settings["window"] = win
+        self.settings["splitters"] = self.splitter_memory.sizes
         self.settings["last_route"] = [[r[0], r[1], r[2]] for r in self.route_panel.route]
         self.settings["speed_kmh"] = self.route_panel.speed_spin.value()
 
