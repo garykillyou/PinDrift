@@ -105,6 +105,21 @@ def test_forward_walk_goes_from_start_to_end_and_holds():
     assert harness.finished == ["已抵達終點，保持於目前座標"]
 
 
+def test_reset_direction_sets_forward_without_starting():
+    """載入路線最愛時把方向設回往終點，但不能因此開始移動。"""
+    # Arrange
+    harness = Harness()
+    harness.session.toggle_direction()
+    assert harness.session.direction == "reverse"
+
+    # Act
+    harness.session.reset_direction()
+
+    # Assert
+    assert harness.session.direction == "forward"
+    assert harness.session.pending_action == "pause"
+
+
 def test_steps_stay_one_second_apart_despite_set_latency():
     """每步間隔要扣掉 sim.set() 的耗時，否則長路線跑下來會越來越慢。"""
     # Arrange：每次注入要花 0.3 秒

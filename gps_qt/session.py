@@ -103,6 +103,11 @@ class GPSSession(QObject):
         確保目前不在移動中（UI 在移動中會停用切換方向按鈕）。"""
         self.direction = "forward" if self.direction == "reverse" else "reverse"
 
+    def reset_direction(self):
+        """把下次「開始移動」的方向設回往終點走（載入路線最愛時用）。
+        與 toggle_direction() 一樣不會啟動移動，呼叫端要確保目前不在移動中。"""
+        self.direction = "forward"
+
     def restore_real_location(self):
         self.pending_action = "disconnect"
 

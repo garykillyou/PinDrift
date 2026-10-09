@@ -210,6 +210,8 @@ PinDrift/
   純粹只是記錄「下次按開始移動要往哪走」；`GPSSession.start()`（由「開始移動」按鈕觸發）才會把
   `pending_action` 設成目前的 `self.direction` 並真正開始移動。UI 在移動中（`pending_action` 為
   `forward`/`reverse`）或斷線中（`disconnect`）會停用切換方向按鈕，要先「停止」才能再切方向。
+  `_load_favorite()` 載入路線最愛時會呼叫 `GPSSession.reset_direction()` 把方向設回往終點
+  （同樣不碰 `pending_action`），新路線一律從起點開始走。
   `geo.RouteSampler(route, step_m)` 依 `haversine()` 算出的距離與設定速度（UI 以 km/h 輸入，經
   `speed_ms()` 換算成 m/s，乘上 `STEP_INTERVAL_S` 就是 `step_m`）把路線切成每秒一步。**切法是把整條路線
   當成一條線依弧長等距取樣，不是逐段切**（修過的 bug）：逐段切時比一步短的段也會佔滿一秒、1.9 步長的段被 `int()` 捨成一步，路線點越密實際速度與
@@ -407,7 +409,8 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
   所以標記文字用序號而不是固定的「起」「終」兩種）；`RoutePlanner` 的按鈕文字同步顯示「已選 N 點」。
   沒有這些回饋，使用者無從判斷剛才那一下有沒有被收到、也不知道還差幾點才能按「完成規劃」。
 - 算完的路線由 `MainWindow._on_route_computed()` **整條取代**目前路線，同時 `fit_to()` 拉視野、
-  `clear_trail()` 清軌跡——路線都換了，舊軌跡沒有參考價值。`_load_favorite()` 載入最愛時同理。
+  `clear_trail()` 清軌跡——路線都換了，舊軌跡沒有參考價值。`_load_favorite()` 載入最愛時同理，
+  載入路線最愛還會多一步 `session.reset_direction()` 把方向設回往終點（路徑規劃算完則不動方向）。
 
 ### 非同步整合：qasync
 [main.py](gps_qt/main.py) 用 `qasync.QEventLoop` 包住 `QApplication` 並 `asyncio.set_event_loop(loop)`，讓 asyncio

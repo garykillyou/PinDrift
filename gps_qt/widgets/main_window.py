@@ -326,6 +326,8 @@ class MainWindow(QMainWindow):
             self.route_panel.set_route([list(r) for r in fav["route"]])
             if "speed_kmh" in fav:
                 self.route_panel.speed_spin.setValue(fav["speed_kmh"])
+            # 載入的是一條新路線，從起點往終點走才合理；上面已擋掉移動中的情況。
+            self.session.reset_direction()
             self._switch_mode("route")
             self.map_panel.fit_to([[r[0], r[1]] for r in fav["route"]])
         # 換了地點/路線，先前的軌跡已經沒有參考價值。
