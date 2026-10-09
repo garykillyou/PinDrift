@@ -14,11 +14,13 @@ from PySide6.QtWidgets import (
 
 from .. import applog, geo, persistence, theme, tunneld, window_geometry
 from ..close_guard import CloseGuard
+from ..notifier import DiscordNotifier
 from ..session import GPSSession
 from .favorites_panel import FavoritesPanel
 from .map_panel import MapPanel
 from .pin_panel import PinPanel
 from .route_panel import DEFAULT_SPEED_KMH, RoutePanel
+from .settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,8 @@ class MainWindow(QMainWindow):
         route = persistence.load_saved_route(self.settings) or [list(r) for r in DEFAULT_ROUTE]
         # 回傳的就是 settings["map"] 本身，MapPanel 會就地更新它，closeEvent 一起寫回。
         self.map_settings = persistence.load_map_settings(self.settings)
+        self.settings["discord_webhook"] = persistence.load_discord_webhook(self.settings)
+        self.discord_notifier = DiscordNotifier(self)
         self._coords_collapsed = False
 
         self.setWindowTitle("PinDrift — iPhone GPS 路線模擬器")
@@ -125,6 +129,9 @@ class MainWindow(QMainWindow):
         subtitle = QLabel("iPhone iOS 26  ·  需先執行 tunneld")
         title_row.addWidget(subtitle)
         title_row.addStretch(1)
+        self.settings_btn = QPushButton("設定")
+        self.settings_btn.clicked.connect(self._open_settings)
+        title_row.addWidget(self.settings_btn)
         self.theme_btn = QPushButton()
         self.theme_btn.clicked.connect(self._toggle_theme)
         title_row.addWidget(self.theme_btn)
@@ -235,6 +242,20 @@ class MainWindow(QMainWindow):
         self.theme_name = "light" if self.theme_name == "dark" else "dark"
         self._apply_theme()
         self.settings["theme"] = self.theme_name
+        error = persistence.save_settings(self.settings)
+        if error:
+            self._log(error)
+
+    # ── 設定對話框 ────────────────────
+    def _open_settings(self):
+        dialog = SettingsDialog(self.settings["discord_webhook"], self.discord_notifier, self)
+        accepted = dialog.exec() == SettingsDialog.DialogCode.Accepted
+        url = dialog.webhook_url()
+        dialog.deleteLater()
+        if not accepted or url == self.settings["discord_webhook"]:
+            return
+        self.settings["discord_webhook"] = url
+        self._log("已設定 Discord 通知" if url else "已關閉 Discord 通知")
         error = persistence.save_settings(self.settings)
         if error:
             self._log(error)
@@ -471,6 +492,16 @@ class MainWindow(QMainWindow):
             self.tray_icon.showMessage(
                 "PinDrift", message, QSystemTrayIcon.MessageIcon.Information, 5000
             )
+        self._notify_discord(message)
+
+    def _notify_discord(self, message):
+        url = self.settings["discord_webhook"]
+        if url:
+            self.discord_notifier.send(url, message, self._on_discord_notified)
+
+    def _on_discord_notified(self, ok, detail):
+        if not ok:
+            self._log("Discord 通知傳送失敗：" + detail)
 
     def _sync_btn_states(self):
         busy = self.session.pending_action in ("forward", "reverse", "disconnect")

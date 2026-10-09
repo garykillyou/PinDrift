@@ -19,8 +19,8 @@ PinDrift 是一個 Python 桌面工具，透過 `pymobiledevice3` 模擬 iPhone�
 **只攔 `OSError` 並回傳錯誤訊息字串（成功回傳 `None`）**，不丟例外——放在唯讀位置時
 存檔失敗不能讓 `closeEvent()` 整個炸掉；序列化失敗則照常拋 `TypeError`，那是程式的 bug。
 寫入是**先序列化、寫到 `.tmp` 再 `os.replace()`**，序列化失敗或寫到一半當機都不會留下被清空的原檔。
-各呼叫端自己決定提示方式：切換主題與自動存檔走執行日誌（自動存檔同樣的錯誤只記一次，放在唯讀
-位置時才不會每兩秒洗版一次）、存最愛與關閉視窗走 `QMessageBox`（視窗都要關了，寫進日誌等於沒說）。
+各呼叫端自己決定提示方式：切換主題、設定對話框按「確定」與自動存檔走執行日誌（自動存檔同樣的錯誤
+只記一次，放在唯讀位置時才不會每兩秒洗版一次）、存最愛與關閉視窗走 `QMessageBox`（視窗都要關了，寫進日誌等於沒說）。
 新增存檔入口時要記得接這個回傳值。
 設定除了關閉視窗時存，**路線、速度、地圖設定變動後也會自動存檔**（`MainWindow._setup_autosave()`），
 程式當掉或被強制結束才不會把上次的路線弄丟。計時器是 `AUTOSAVE_DELAY_MS`(2000) 的 single-shot，
@@ -50,7 +50,9 @@ widget 上的狀態由 `_collect_settings()` 統一寫回，自動存檔與 `clo
 - `pindrift_settings.json`：`theme`（主題偏好）、`window`（視窗幾何 + `maximized`）、
   `last_route`（上次的路線座標點）、`speed_kmh`（上次的移動速度）、
   `map`（地圖的 `tile_source`／`custom_tile_url`／`custom_attribution`／`center`／`zoom`／`follow`／
-  `routing_costing`／`simplify_m`，由 `persistence.load_map_settings()` 補齊預設值）。
+  `routing_costing`／`simplify_m`，由 `persistence.load_map_settings()` 補齊預設值）、
+  `discord_webhook`（抵達端點時的 Discord 通知網址，空字串代表不通知，由
+  `persistence.load_discord_webhook()` 檢查；見下方「Discord 通知」）。
   **每個欄位讀進來都要先檢查型別與範圍**，設定檔可能被手改壞：`window` 走
   `window_geometry.normalize_window()`、`speed_kmh` 走 `persistence.load_speed_kmh()`、`last_route` 走
   `load_saved_route()`、`map` 走 `load_map_settings()`（`center` 要在經緯度範圍內、`zoom` 在
@@ -77,7 +79,8 @@ python -m pymobiledevice3 remote tunneld
 # 讀檔壞檔備份與最愛驗證、存檔失敗處理、路線表格的經緯度範圍檢查、
 # GPSSession 的續走／改速度／循環走法／時間間隔／停止立即生效／例外回報／tunneld 提示、KML 匯入、
 # 網路請求的節流與過期過濾、移動中鎖定路線表格與清空確認、固定座標的確定通知、記錄檔與例外攔截、
-# 圖磚選擇與自訂版權標示的 escape、圖磚快取的路徑／新鮮度／容量上限、模擬中關閉視窗的恢復流程）
+# 圖磚選擇與自訂版權標示的 escape、圖磚快取的路徑／新鮮度／容量上限、模擬中關閉視窗的恢復流程、
+# Discord 通知的網址檢查／payload／失敗說明、設定對話框）
 pip install -r requirements-dev.txt
 python -m pytest
 
@@ -112,7 +115,7 @@ tunneld 的主控台輸出），已凍結時跑同一個資料夾裡的 `PinDrif
 跑 `python -m pymobiledevice3 remote tunneld`，打包版改成「重新開啟 PinDrift 讓它自動啟動，或以系統
 管理員身分執行同資料夾的 `PinDrift-tunneld.exe`」。任何給使用者看的指令都要想一下打包版有沒有 Python。
 
-測試以不需要 Qt 事件迴圈的邏輯為主（[tests/](tests)）；少數 widget（`RoutePanel`、`PinPanel`）以
+測試以不需要 Qt 事件迴圈的邏輯為主（[tests/](tests)）；少數 widget（`RoutePanel`、`PinPanel`、`SettingsDialog`）以
 offscreen 平台建立來測，地圖頁面與 `MainWindow` 沒有自動化測試（`MainWindow` 需要 QtWebEngine；
 要測它的行為就像 `CloseGuard` 那樣抽成只用 QtCore 的小類別）。**需要 Q*Application 的測試一律用
 [conftest.py](conftest.py) 的 `qapp` fixture**：一個行程只能有一個，而且若先建了 `QCoreApplication`，
@@ -153,7 +156,7 @@ PinDrift/
     │                        # douglas_peucker()、simplify_route()（保留備註點的抽稀）、
     │                        # cumulative_distances()、route_length()、
     │                        # is_valid_latitude()／is_valid_longitude()、adjacent_point()（前後插點的座標）
-    ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化
+    ├── persistence.py       # JSON 存讀 + KML 解析 + 地圖設定正規化 + Discord webhook 網址檢查
     ├── window_geometry.py   # 視窗位置記憶（QScreen API）
     ├── session.py           # GPSSession：連線狀態機（pending_action 設計）
     ├── close_guard.py       # CloseGuard：模擬中關閉視窗時先恢復真實定位再關
@@ -165,6 +168,7 @@ PinDrift/
     ├── netclient.py         # SingleFlightClient：節流 + 只保留最後一次請求（geocode/routing 共用）
     ├── geocode.py           # Nominatim 地名搜尋（Python 端發送，符合使用政策）
     ├── routing.py           # Valhalla 路徑規劃 + polyline6 解碼
+    ├── notifier.py          # Discord Webhook 通知（抵達端點時推播到手機）
     ├── web/                 # 地圖頁面（QWebEngineView 以 file:// 載入）
     │   ├── map.html / map.css / map.js
     │   └── vendor/          # Leaflet 1.9.4 本地副本（不依賴 CDN）
@@ -174,7 +178,8 @@ PinDrift/
         ├── route_planner.py    # 路徑規劃工具列：依序點選多個路徑點 → 算出沿道路的路線
         ├── pin_panel.py        # 固定定位模式面板（含座標貼上攔截）
         ├── route_panel.py      # 路線模式面板（速度設定 + 路線表格）
-        └── favorites_panel.py  # 最愛清單
+        ├── favorites_panel.py  # 最愛清單
+        └── settings_dialog.py  # 設定對話框（Discord Webhook 網址 + 測試傳送）
 ```
 
 ### 執行流程（連接 iPhone 的關鍵鏈路，長連線架構）
@@ -405,7 +410,7 @@ payload 一律由模組層級的純函式序列化（`route_payload()`／`bounds
 事件迴圈直接跑在 Qt 事件迴圈的同一條 thread 上，因此 `GPSSession._session_main()`／`_walk_route()`／
 `_walk_pin()` 可以直接是 async 方法，不需要背景 thread、也不需要跨執行緒 marshalling。`GPSSession` 用
 Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`direction_changed`／
-`position_changed`（地圖即時位置與軌跡）／`route_finished`（抵達端點的系統匣通知））把狀態
+`position_changed`（地圖即時位置與軌跡）／`route_finished`（抵達端點的系統匣通知與 Discord 通知））把狀態
 送出，`MainWindow.__init__` 用 `.connect()` 接對應的 slot。
 
 新增/修改任何動作（`pending_action` 的新值）時，需同步確認：(a) `_session_main()` 的 if/elif 分派邏輯、
@@ -431,6 +436,25 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   對話框會搶焦點、打斷使用者正在做的事（例如全螢幕遊戲），系統匣提示不會 activate 視窗。
   `_start()` 會先 `tray_icon.hide()` 清掉上一趟殘留的通知（`hide()` 會讓還在顯示中的 balloon 一併消失），
   否則使用者會把舊的 toast 誤認成這趟剛跳出來的。
+- **Discord 通知**（[notifier.py](gps_qt/notifier.py)）：iPhone 沒有能從 USB 端觸發的使用者通知
+  （pymobiledevice3 的 `notification_proxy` 送的是系統內部的 Darwin notification，螢幕上看不到），
+  所以 `_on_route_finished()` 在系統匣通知之外，再經由 `MainWindow._notify_discord()` 把同一則訊息
+  POST 到 `settings["discord_webhook"]`，手機上的 Discord App 推播出來。網址在標題列「設定」按鈕開的
+  [SettingsDialog](gps_qt/widgets/settings_dialog.py) 裡改，按「確定」才寫回並立刻存檔；「測試傳送」用的是
+  輸入框當下的網址，測試期間停用按鈕避免被限流，輸入框也設成唯讀（結果才對得上畫面上的網址）。
+  - **webhook 網址就是憑證**：`persistence.is_valid_webhook_url()` 只接受 Discord 官方網域（含
+    `discordapp.com`、`ptb.`／`canary.`，論壇頻道可加 `?thread_id=`），設定檔被手改成別的網址也不會把
+    訊息送到任意主機。檢查放在 `persistence` 而不是 `notifier`，讓 `persistence` 維持不相依 Qt。
+    請求設成 `ManualRedirectPolicy`：Qt 6 預設會跟著 https 轉到其他網域，307／308 還會把內容再送一次，
+    收到 3xx 一律當成失敗。失敗說明由 `describe_result()` 依 HTTP 狀態碼／錯誤代碼組成，**不能用 `reply.errorString()`**——Qt 的 HTTP
+    錯誤字串會帶完整網址（含 token），寫進執行日誌與記錄檔就外洩了。輸入框用 `PasswordEchoOnEdit`。
+  - `DiscordNotifier` 不繼承 `SingleFlightClient`：每則通知都要送到，不能被下一則取消；結果由呼叫端
+    傳入的 `on_done(ok, detail)` 回報。對話框的 callback 用 `shiboken6.isValid()` 擋掉對話框已刪除的情況。
+  - 目前只有「抵達端點」會通知。要讓其他事件（例如 `_session_main()` 接到的例外、連線中斷）也通知，
+    一律走 `MainWindow._notify_discord(message)`，不要另外呼叫 `DiscordNotifier.send()`：沒設定網址時
+    不送、失敗寫進執行日誌，這兩件事都在那裡處理。
+  - `SettingsDialog` 是之後放其他偏好設定的地方。新增欄位時照 webhook 的形狀：讀檔用 `persistence`
+    的檢查函式、不合法時「確定」停用，`_open_settings()` 只在值真的變了才寫回並存檔。
 - **模擬中關閉視窗要先恢復真實定位**（修過的 bug）：直接關掉的話 qasync 事件迴圈一停，`GPSSession`
   的 task 被整個銷毀、`sim.clear()` 從來沒被呼叫，只能靠連線中斷時 iPhone 自己恢復。
   [close_guard.py](gps_qt/close_guard.py) 的 `CloseGuard.allow_close()` 由 `closeEvent()` 最先呼叫：

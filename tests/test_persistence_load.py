@@ -177,3 +177,17 @@ def test_normalize_favorite_route_without_speed_stays_without_speed():
     fav = persistence.normalize_favorite({"type": "route", "name": "a", "route": ROUTE})
 
     assert "speed_kmh" not in fav
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("https://discord.com/api/webhooks/1/token", "https://discord.com/api/webhooks/1/token"),
+    ("https://evil.com/api/webhooks/1/token", ""),
+    (123, ""),
+    (None, ""),
+])
+def test_load_discord_webhook_only_accepts_discord_urls(value, expected):
+    assert persistence.load_discord_webhook({"discord_webhook": value}) == expected
+
+
+def test_load_discord_webhook_defaults_to_empty_when_missing():
+    assert persistence.load_discord_webhook({}) == ""

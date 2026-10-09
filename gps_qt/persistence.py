@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 import shutil
 import time
 import xml.etree.ElementTree as ET
@@ -284,6 +285,31 @@ def load_speed_kmh(settings, default):
     """
     value = settings.get("speed_kmh")
     return float(value) if _is_finite_number(value) and value > 0 else default
+
+
+# https://discord.com/api/webhooks/<id>/<token>；舊網域 discordapp.com 與 ptb／canary 版本複製出來的
+# 也接受。發到論壇頻道要在後面加 ?thread_id=<討論串 id>。
+_WEBHOOK_URL_RE = re.compile(
+    r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]+/?"
+    r"(?:\?thread_id=\d+)?"
+)
+
+
+def is_valid_webhook_url(url):
+    """是否為 Discord 官方網域的 webhook 網址（只接受 str，前後空白要先去掉）。
+
+    放在這裡而不是 notifier.py：讀設定檔要用到，而這個模組不相依 Qt。
+    """
+    return isinstance(url, str) and _WEBHOOK_URL_RE.fullmatch(url) is not None
+
+
+def load_discord_webhook(settings):
+    """Discord 通知的 webhook 網址；沒設定或不合法時回傳空字串（代表不通知）。
+
+    只接受 Discord 官方網域的網址：設定檔被手改成別的網址時，不能因此把訊息送到任意主機。
+    """
+    value = settings.get("discord_webhook")
+    return value if is_valid_webhook_url(value) else ""
 
 
 def _kml_tag(elem):
