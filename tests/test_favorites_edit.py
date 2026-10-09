@@ -1,6 +1,6 @@
-"""路線最愛編輯對話框：名稱與速度的修改結果。"""
+"""最愛清單：路線編輯對話框（名稱與速度的修改結果）與依名稱排序。"""
 
-from gps_qt.widgets.favorites_panel import _RouteEditDialog
+from gps_qt.widgets.favorites_panel import _RouteEditDialog, sorted_by_name
 
 ROUTE = [[24.0, 121.0, "起"], [24.1, 121.1, "終"]]
 
@@ -44,3 +44,20 @@ def test_ok_disabled_when_name_blank(qapp):
     dialog.name_edit.setText("   ")
 
     assert not dialog._ok_btn.isEnabled()
+
+
+def test_sorted_by_name_keeps_original_indices():
+    favorites = [
+        {"type": "route", "name": "路線10", "route": ROUTE},
+        {"type": "pin", "name": "家", "lat": 24.0, "lon": 121.0},
+        {"type": "route", "name": "b 路線", "route": ROUTE},
+        {"type": "route", "name": "路線2", "route": ROUTE},
+        {"type": "route", "name": "A 路線", "route": ROUTE},
+    ]
+    original = [dict(fav) for fav in favorites]
+
+    result = sorted_by_name(favorites, "route")
+
+    assert [i for i, _ in result] == [4, 2, 3, 0]
+    assert [fav["name"] for _, fav in result] == ["A 路線", "b 路線", "路線2", "路線10"]
+    assert favorites == original  # 不改動原本的清單

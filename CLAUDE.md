@@ -593,6 +593,8 @@ Qt signal（`log`/`progress_value`/`progress_label`/`paused`/`session_ended`/`di
   清單把圖層清掉。payload 每一筆都帶 `index`——它在 `FavoritesPanel.favorites` 完整清單裡的原始位置，
   使用者點地圖上的圓點時才能對回同一筆資料走既有的 `_load_favorite()` 流程（清單本身是過濾過的，
   用過濾後的序號會對錯）。
+- **清單依名稱排序只影響顯示**：`sorted_by_name()` 回傳 `(原始位置, 最愛)`，用固定 zh_TW 語系的 `QCollator`（不分大小寫、
+  數字依數值比較）排序，`self.favorites` 與存檔順序都不變，編輯／刪除仍用原始位置對回資料。
 - 路線最愛除了手動輸入座標外，也可從 KML 檔案匯入（`_import_kml` → `persistence.parse_kml_route()`）：
   解析第一條 `LineString` 作為路線座標，並用起訖點附近（`KML_MARKER_MATCH_M`，50 公尺內）的 `Point`
   名稱自動當作起訖點備註，其餘中間點備註留空。距離用 `haversine()` 算（修過的 bug）：舊版直接拿經緯度

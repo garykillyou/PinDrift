@@ -4,7 +4,7 @@ QListWidget + 自訂 item widget：最愛清單項目數通常不多，不像路
 處理數千筆，這裡不需要虛擬化。
 """
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QCollator, QLocale, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
@@ -22,6 +22,21 @@ def _dialog_width(dialog, text):
     """依名稱長度決定編輯對話框的寬度，長名稱不會被輸入框截掉。"""
     text_width = dialog.fontMetrics().horizontalAdvance(text)
     return max(RENAME_DIALOG_MIN_WIDTH, text_width + RENAME_DIALOG_PADDING)
+
+
+def sorted_by_name(favorites, fav_type):
+    """取出指定類型的最愛並依名稱排序，回傳 (在完整清單裡的原始位置, 最愛) 串列。
+
+    只排顯示順序，不改動 favorites 本身：編輯／刪除／地圖圓點都靠原始位置對回
+    同一筆資料，存檔順序也維持不變。用 QCollator 依繁體中文（zh_TW）規則比對
+    （不分大小寫、數字依數值大小，「路線2」排在「路線10」前面）；固定語系而不跟
+    系統走，換到非繁中的 Windows 上順序才不會改變。同名時維持原本的先後。
+    """
+    collator = QCollator(QLocale(QLocale.Chinese, QLocale.Taiwan))
+    collator.setCaseSensitivity(Qt.CaseInsensitive)
+    collator.setNumericMode(True)
+    filtered = [(i, fav) for i, fav in enumerate(favorites) if fav["type"] == fav_type]
+    return sorted(filtered, key=lambda item: collator.sortKey(item[1]["name"]))
 
 
 def _fix_to_hint(widget, extra=0):
@@ -154,7 +169,7 @@ class FavoritesPanel(QFrame):
         self._save_pin_btn.setVisible(current_type == "pin")
         self._save_route_btn.setVisible(current_type == "route")
         self._import_btn.setVisible(current_type == "route")
-        filtered = [(i, fav) for i, fav in enumerate(self.favorites) if fav["type"] == current_type]
+        filtered = sorted_by_name(self.favorites, current_type)
         if not filtered:
             empty_text = "尚無儲存的最愛地點" if current_type == "pin" else "尚無儲存的最愛路線"
             item = QListWidgetItem(empty_text)
